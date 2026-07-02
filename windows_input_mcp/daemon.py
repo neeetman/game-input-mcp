@@ -271,9 +271,10 @@ def _h_scroll(p: dict) -> dict:
 
 
 def _h_send_keys(p: dict) -> dict:
-    if p.get("activate", True):
-        if not win32.focus_window(p["pid"]):
-            return {"success": False, "error": f"failed to focus window for pid {p['pid']}"}
+    focused, error = _focus_if_requested(_target_param(p), p.get("activate", True))
+    if error is not None:
+        return error
+    if focused and p.get("activate", True):
         time.sleep(0.1)
     ok = win32.send_keys(p["keys"])
     return {"success": ok, "keys": p["keys"]}

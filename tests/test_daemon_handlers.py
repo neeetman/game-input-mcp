@@ -266,12 +266,30 @@ def test_scroll_uses_legacy_pid_and_target_spec(monkeypatch) -> None:
 
 
 def test_send_keys_still_pid_compatible(monkeypatch) -> None:
+    monkeypatch.setattr(daemon.targets, "resolve_target", lambda target: _target())
     monkeypatch.setattr(daemon.win32, "focus_window", lambda pid: True)
     monkeypatch.setattr(daemon.win32, "send_keys", lambda keys: True)
 
     result = daemon._h_send_keys({"pid": 2, "keys": "abc"})
 
     assert result == {"success": True, "keys": "abc"}
+
+
+def test_send_keys_returns_structured_focus_failure(monkeypatch) -> None:
+    sends: list[str] = []
+    monkeypatch.setattr(daemon.targets, "resolve_target", lambda target: _target())
+    monkeypatch.setattr(daemon.win32, "focus_window", lambda pid: False)
+    monkeypatch.setattr(
+        daemon.win32,
+        "send_keys",
+        lambda keys: sends.append(keys) or True,
+    )
+
+    result = daemon._h_send_keys({"pid": 2, "keys": "abc"})
+
+    assert result["success"] is False
+    assert result["error_code"] == "FOCUS_FAILED"
+    assert sends == []
 
 
 def test_key_handlers_use_send_key_counts(monkeypatch) -> None:
