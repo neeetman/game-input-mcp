@@ -107,6 +107,7 @@ class WindowInfo:
     client_screen_origin: tuple[int, int]   # ClientToScreen((0,0))
     dpi: int                                # GetDpiForWindow
     is_foreground: bool
+    is_minimized: bool = False
 
 
 _AUX_WINDOW_CLASSES = {
@@ -172,6 +173,14 @@ def get_window_info(pid: int) -> WindowInfo | None:
     hwnd = find_window_by_pid(pid)
     if not hwnd:
         return None
+    return _window_info_from_hwnd(hwnd)
+
+
+def _window_info_from_hwnd(hwnd: int) -> WindowInfo | None:
+    if not hwnd or not user32.IsWindow(hwnd):
+        return None
+    proc_pid = wintypes.DWORD()
+    user32.GetWindowThreadProcessId(hwnd, ctypes.byref(proc_pid))
 
     title_len = user32.GetWindowTextLengthW(hwnd)
     title_buf = ctypes.create_unicode_buffer(title_len + 1)
@@ -192,14 +201,37 @@ def get_window_info(pid: int) -> WindowInfo | None:
 
     return WindowInfo(
         hwnd=hwnd,
-        pid=pid,
+        pid=proc_pid.value,
         title=title_buf.value,
         window_rect=(wrect.left, wrect.top, wrect.right, wrect.bottom),
         client_size=(cw, ch),
         client_screen_origin=(pt.x, pt.y),
         dpi=dpi,
         is_foreground=(user32.GetForegroundWindow() == hwnd),
+        is_minimized=bool(user32.IsIconic(hwnd)),
     )
+
+
+def get_window_info_by_hwnd(hwnd: int) -> WindowInfo | None:
+    return _window_info_from_hwnd(hwnd)
+
+
+def list_window_infos() -> list[WindowInfo]:
+    infos: list[WindowInfo] = []
+
+    @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    def enum_proc(hwnd, lparam):
+        if not user32.IsWindowVisible(hwnd):
+            return True
+        if _class_name(hwnd) in _AUX_WINDOW_CLASSES:
+            return True
+        info = _window_info_from_hwnd(hwnd)
+        if info is not None:
+            infos.append(info)
+        return True
+
+    user32.EnumWindows(enum_proc, 0)
+    return infos
 
 
 SPI_GETFOREGROUNDLOCKTIMEOUT = 0x2000
