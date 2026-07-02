@@ -2,7 +2,13 @@ from __future__ import annotations
 
 import pytest
 
-from windows_input_mcp.models import Rect, TargetSpec, error_response, ok_response
+from windows_input_mcp.models import (
+    Rect,
+    TargetInfo,
+    TargetSpec,
+    error_response,
+    ok_response,
+)
 
 
 def test_rect_width_height_and_list() -> None:
@@ -45,4 +51,39 @@ def test_response_helpers_have_stable_shape() -> None:
         "message": "No target",
         "retryable": True,
         "details": {"pid": 1},
+    }
+    assert error_response("TARGET_NOT_FOUND", "No target", True, pid=1) == {
+        "success": False,
+        "error_code": "TARGET_NOT_FOUND",
+        "message": "No target",
+        "retryable": True,
+        "details": {"pid": 1},
+    }
+
+
+def test_target_info_to_dict_is_json_friendly() -> None:
+    info = TargetInfo(
+        hwnd=10,
+        pid=20,
+        title="Game",
+        window_rect=Rect(1, 2, 301, 202),
+        client_rect_screen=Rect(11, 22, 291, 182),
+        client_size=(280, 160),
+        client_screen_origin=(11, 22),
+        dpi=144,
+        is_foreground=True,
+        is_minimized=False,
+    )
+
+    assert info.to_dict() == {
+        "hwnd": 10,
+        "pid": 20,
+        "title": "Game",
+        "window_rect": [1, 2, 301, 202],
+        "client_rect_screen": [11, 22, 291, 182],
+        "client_size": [280, 160],
+        "client_screen_origin": [11, 22],
+        "dpi": 144,
+        "is_foreground": True,
+        "is_minimized": False,
     }

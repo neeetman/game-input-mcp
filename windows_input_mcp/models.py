@@ -97,7 +97,6 @@ def ok_response(**fields: Any) -> dict[str, Any]:
 def error_response(
     error_code: str,
     message: str,
-    *,
     retryable: bool = False,
     **details: Any,
 ) -> dict[str, Any]:
