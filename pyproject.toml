@@ -5,7 +5,16 @@ description = "MCP server for OS-level Windows input (keyboard/mouse) with frame
 requires-python = ">=3.10"
 dependencies = [
     "mcp>=1.0.0",
+    "pillow>=10.0.0",
+    "mss>=9.0.0; sys_platform == 'win32'",
+    "dxcam>=0.3.0; sys_platform == 'win32'",
     "pywin32>=306; sys_platform == 'win32'",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "tomli>=2.0.0; python_version < '3.11'",
 ]
 
 [project.scripts]
