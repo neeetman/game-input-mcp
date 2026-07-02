@@ -71,7 +71,7 @@ def capture_region(rect: Rect | None, *, backend: str = "auto") -> CaptureResult
         try:
             image = inst.capture(rect)
             return CaptureResult(image=image, backend=inst.name, mode=inst.mode(rect))
-        except (OSError, RuntimeError, ValueError) as exc:
+        except Exception as exc:
             last_error = exc
             log.warning("capture backend %s failed", inst.name, exc_info=selected != "auto")
     if last_error is not None:

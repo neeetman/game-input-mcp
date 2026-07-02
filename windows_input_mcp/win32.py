@@ -234,10 +234,10 @@ def list_window_infos() -> list[WindowInfo]:
     return infos
 
 
-def get_monitor_rects() -> list:
+def get_monitor_rects() -> list["Rect"]:
     from .models import Rect
 
-    monitors: list = []
+    monitors: list[Rect] = []
 
     @ctypes.WINFUNCTYPE(wintypes.BOOL, ctypes.c_void_p, ctypes.c_void_p, ctypes.POINTER(wintypes.RECT), wintypes.LPARAM)
     def enum_proc(hmonitor, hdc, rect, lparam):

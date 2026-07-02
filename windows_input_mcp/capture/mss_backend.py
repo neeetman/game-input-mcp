@@ -8,7 +8,7 @@ from .base import CaptureBackend
 
 try:
     import mss
-except ImportError:
+except Exception:
     mss = None
 
 

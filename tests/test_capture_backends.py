@@ -84,7 +84,7 @@ def test_auto_capture_falls_back_after_failure(monkeypatch) -> None:
             return True
 
         def capture(self, rect):
-            raise RuntimeError("broken")
+            raise Exception("broken")
 
     class GoodBackend(CaptureBackend):
         name = "good"
