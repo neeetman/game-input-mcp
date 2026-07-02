@@ -234,6 +234,20 @@ def list_window_infos() -> list[WindowInfo]:
     return infos
 
 
+def get_monitor_rects() -> list:
+    from .models import Rect
+
+    monitors: list = []
+
+    @ctypes.WINFUNCTYPE(wintypes.BOOL, ctypes.c_void_p, ctypes.c_void_p, ctypes.POINTER(wintypes.RECT), wintypes.LPARAM)
+    def enum_proc(hmonitor, hdc, rect, lparam):
+        monitors.append(Rect(rect.contents.left, rect.contents.top, rect.contents.right, rect.contents.bottom))
+        return True
+
+    user32.EnumDisplayMonitors(None, None, enum_proc, 0)
+    return monitors
+
+
 SPI_GETFOREGROUNDLOCKTIMEOUT = 0x2000
 SPI_SETFOREGROUNDLOCKTIMEOUT = 0x2001
 SPIF_SENDCHANGE = 0x2
