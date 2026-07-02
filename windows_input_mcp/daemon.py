@@ -18,9 +18,15 @@ from pathlib import Path
 
 import win32security
 
-from . import ipc, win32
+from . import ipc, targets, win32
+from .capture import service as capture_service
+from .frames import FrameCache
+from .geometry import FrameGeometry, point_to_screen
+from .models import Rect, TargetInfo, error_response, ok_response
 
 log = logging.getLogger("windows-input-daemon")
+
+FRAME_CACHE = FrameCache()
 
 
 # === Handlers ===============================================================
@@ -51,20 +57,113 @@ def _h_focus_window(p: dict) -> dict:
     return out
 
 
+def _h_list_targets(p: dict) -> dict:
+    del p
+    return ok_response(targets=[target.to_dict() for target in targets.list_targets()])
+
+
+def _h_get_target_info(p: dict) -> dict:
+    target = targets.resolve_target(p.get("target", p.get("pid")))
+    if target is None:
+        return error_response(
+            "TARGET_NOT_FOUND",
+            "Target window was not found",
+            retryable=True,
+            params=p,
+        )
+    return ok_response(target=target.to_dict())
+
+
+def _h_focus_target(p: dict) -> dict:
+    target = targets.resolve_target(p.get("target", p.get("pid")))
+    if target is None:
+        return error_response(
+            "TARGET_NOT_FOUND",
+            "Target window was not found",
+            retryable=True,
+            params=p,
+        )
+    out = win32.focus_window_detailed(target.pid)
+    out["pid"] = target.pid
+    out["target"] = target.to_dict()
+    return out
+
+
+def _h_capture(p: dict) -> dict:
+    return capture_service.capture_target(
+        target=p.get("target", p.get("pid")),
+        region=p.get("region"),
+        scope=p.get("scope", "client"),
+        backend=p.get("backend", "auto"),
+        max_width=p.get("max_width", 1920),
+        cache=FRAME_CACHE,
+    )
+
+
 def _fb_size(p: dict):
     fw, fh = p.get("framebuffer_width"), p.get("framebuffer_height")
     return (fw, fh) if fw is not None and fh is not None else None
 
 
+def _target_param(p: dict) -> dict | int:
+    return p.get("target", p.get("pid"))
+
+
+def _frame_geometry(frame_id: str | None) -> FrameGeometry | None:
+    if not frame_id:
+        return None
+    record = FRAME_CACHE.get(frame_id)
+    if record is None:
+        raise KeyError(frame_id)
+    geometry = record.metadata["geometry"]
+    image = record.metadata["image"]
+    return FrameGeometry(
+        image_size=(int(image["width"]), int(image["height"])),
+        capture_rect_screen=Rect.from_list(geometry["capture_rect_screen"]),
+        client_rect_screen=Rect.from_list(geometry["client_rect_screen"]),
+        scale=float(image.get("scale", 1.0)),
+    )
+
+
+def _resolve_target(p: dict) -> tuple[TargetInfo | None, dict | None]:
+    target = targets.resolve_target(_target_param(p))
+    if target is None:
+        return None, error_response(
+            "TARGET_NOT_FOUND",
+            "Target window was not found",
+            retryable=True,
+            params=p,
+        )
+    return target, None
+
+
 def _h_mouse_click(p: dict) -> dict:
-    info = win32.get_window_info(p["pid"])
-    if info is None:
-        return {"success": False, "error": f"window not found for pid {p['pid']}"}
+    target, error = _resolve_target(p)
+    if error is not None:
+        return error
+
     if p.get("activate", True):
-        win32.focus_window(p["pid"])
+        win32.focus_window(target.pid)
         time.sleep(0.05)
-    sx, sy = win32.translate_to_screen(
-        info, p["x"], p["y"], p.get("scope", "framebuffer"), _fb_size(p)
+
+    scope = p.get("scope", "capture" if p.get("frame_id") else "framebuffer")
+    try:
+        frame = _frame_geometry(p.get("frame_id"))
+    except KeyError:
+        return error_response(
+            "FRAME_NOT_FOUND",
+            "Frame metadata was not found",
+            retryable=True,
+            frame_id=p.get("frame_id"),
+        )
+
+    sx, sy = point_to_screen(
+        p["x"],
+        p["y"],
+        scope,
+        target,
+        frame=frame,
+        framebuffer_size=_fb_size(p),
     )
     ok = win32.send_mouse_click(
         sx, sy, button=p.get("button", "left"), clicks=p.get("clicks", 1)
@@ -72,41 +171,88 @@ def _h_mouse_click(p: dict) -> dict:
     return {
         "success": ok,
         "screen_coords": [sx, sy],
-        "scope": p.get("scope", "framebuffer"),
+        "scope": scope,
         "translated_from": [p["x"], p["y"]],
-        "client_size": list(info.client_size),
-        "client_origin": list(info.client_screen_origin),
+        "target": target.to_dict(),
     }
 
 
 def _h_mouse_drag(p: dict) -> dict:
-    info = win32.get_window_info(p["pid"])
-    if info is None:
-        return {"success": False, "error": f"window not found for pid {p['pid']}"}
+    target, error = _resolve_target(p)
+    if error is not None:
+        return error
+
     if p.get("activate", True):
-        win32.focus_window(p["pid"])
+        win32.focus_window(target.pid)
         time.sleep(0.05)
-    scope = p.get("scope", "framebuffer")
-    fb = _fb_size(p)
-    f_screen = win32.translate_to_screen(info, p["from_x"], p["from_y"], scope, fb)
-    t_screen = win32.translate_to_screen(info, p["to_x"], p["to_y"], scope, fb)
+
+    scope = p.get("scope", "capture" if p.get("frame_id") else "framebuffer")
+    try:
+        frame = _frame_geometry(p.get("frame_id"))
+    except KeyError:
+        return error_response(
+            "FRAME_NOT_FOUND",
+            "Frame metadata was not found",
+            retryable=True,
+            frame_id=p.get("frame_id"),
+        )
+
+    from_screen = point_to_screen(
+        p["from_x"],
+        p["from_y"],
+        scope,
+        target,
+        frame=frame,
+        framebuffer_size=_fb_size(p),
+    )
+    to_screen = point_to_screen(
+        p["to_x"],
+        p["to_y"],
+        scope,
+        target,
+        frame=frame,
+        framebuffer_size=_fb_size(p),
+    )
     ok = win32.send_mouse_drag(
-        f_screen, t_screen,
+        from_screen,
+        to_screen,
         button=p.get("button", "left"),
         steps=p.get("steps", 10),
     )
-    return {"success": ok, "from_screen": list(f_screen), "to_screen": list(t_screen)}
+    return {
+        "success": ok,
+        "from_screen": list(from_screen),
+        "to_screen": list(to_screen),
+    }
 
 
 def _h_scroll(p: dict) -> dict:
-    info = win32.get_window_info(p["pid"])
-    if info is None:
-        return {"success": False, "error": f"window not found for pid {p['pid']}"}
+    target, error = _resolve_target(p)
+    if error is not None:
+        return error
+
     if p.get("activate", True):
-        win32.focus_window(p["pid"])
+        win32.focus_window(target.pid)
         time.sleep(0.05)
-    sx, sy = win32.translate_to_screen(
-        info, p["x"], p["y"], p.get("scope", "framebuffer"), _fb_size(p)
+
+    scope = p.get("scope", "capture" if p.get("frame_id") else "framebuffer")
+    try:
+        frame = _frame_geometry(p.get("frame_id"))
+    except KeyError:
+        return error_response(
+            "FRAME_NOT_FOUND",
+            "Frame metadata was not found",
+            retryable=True,
+            frame_id=p.get("frame_id"),
+        )
+
+    sx, sy = point_to_screen(
+        p["x"],
+        p["y"],
+        scope,
+        target,
+        frame=frame,
+        framebuffer_size=_fb_size(p),
     )
     delta = p.get("delta", 120)
     ok = win32.send_scroll(sx, sy, delta)
@@ -123,6 +269,10 @@ def _h_send_keys(p: dict) -> dict:
 
 
 HANDLERS = {
+    "list_targets": _h_list_targets,
+    "get_target_info": _h_get_target_info,
+    "focus_target": _h_focus_target,
+    "capture": _h_capture,
     "get_window_info": _h_get_window_info,
     "focus_window": _h_focus_window,
     "mouse_click": _h_mouse_click,
