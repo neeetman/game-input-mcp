@@ -50,6 +50,32 @@ def test_get_target_info_handler_resolves_pid_or_target(monkeypatch) -> None:
     assert daemon._h_get_target_info({"target": {"pid": 2}})["target"]["pid"] == 2
 
 
+def test_new_target_handlers_return_structured_target_error(monkeypatch) -> None:
+    def raise_value_error(target):
+        raise ValueError("target must include pid or hwnd")
+
+    monkeypatch.setattr(daemon.targets, "resolve_target", raise_value_error)
+
+    assert daemon._h_get_target_info({"target": {}})["error_code"] == "TARGET_NOT_FOUND"
+    assert daemon._h_focus_target({"target": {}})["error_code"] == "TARGET_NOT_FOUND"
+    assert daemon._h_capture({"target": {}})["error_code"] == "TARGET_NOT_FOUND"
+
+
+def test_capture_handler_resolves_target_before_delegating(monkeypatch) -> None:
+    calls = []
+    monkeypatch.setattr(daemon.targets, "resolve_target", lambda target: _target())
+    monkeypatch.setattr(
+        daemon.capture_service,
+        "capture_target",
+        lambda **kwargs: calls.append(kwargs) or {"success": True, "frame_id": "frame_1"},
+    )
+
+    result = daemon._h_capture({"target": {"pid": 2}, "backend": "fake"})
+
+    assert result == {"success": True, "frame_id": "frame_1"}
+    assert calls[0]["target"] == {"pid": 2}
+
+
 def test_focus_target_handler_resolves_target(monkeypatch) -> None:
     monkeypatch.setattr(daemon.targets, "resolve_target", lambda target: _target())
     monkeypatch.setattr(
@@ -65,6 +91,7 @@ def test_focus_target_handler_resolves_target(monkeypatch) -> None:
 
 
 def test_capture_handler_delegates_to_capture_service(monkeypatch) -> None:
+    monkeypatch.setattr(daemon.targets, "resolve_target", lambda target: _target())
     monkeypatch.setattr(
         daemon.capture_service,
         "capture_target",

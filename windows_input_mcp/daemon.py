@@ -63,26 +63,16 @@ def _h_list_targets(p: dict) -> dict:
 
 
 def _h_get_target_info(p: dict) -> dict:
-    target = targets.resolve_target(p.get("target", p.get("pid")))
-    if target is None:
-        return error_response(
-            "TARGET_NOT_FOUND",
-            "Target window was not found",
-            retryable=True,
-            params=p,
-        )
+    target, error = _resolve_target(p)
+    if error is not None:
+        return error
     return ok_response(target=target.to_dict())
 
 
 def _h_focus_target(p: dict) -> dict:
-    target = targets.resolve_target(p.get("target", p.get("pid")))
-    if target is None:
-        return error_response(
-            "TARGET_NOT_FOUND",
-            "Target window was not found",
-            retryable=True,
-            params=p,
-        )
+    target, error = _resolve_target(p)
+    if error is not None:
+        return error
     out = win32.focus_window_detailed(target.pid)
     out["pid"] = target.pid
     out["target"] = target.to_dict()
@@ -90,6 +80,9 @@ def _h_focus_target(p: dict) -> dict:
 
 
 def _h_capture(p: dict) -> dict:
+    _, error = _resolve_target(p)
+    if error is not None:
+        return error
     return capture_service.capture_target(
         target=p.get("target", p.get("pid")),
         region=p.get("region"),
