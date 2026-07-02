@@ -96,6 +96,8 @@ def test_mouse_click_uses_frame_geometry_when_frame_id_present(monkeypatch) -> N
 
     assert result["success"] is True
     assert result["screen_coords"] == [260, 220]
+    assert result["client_size"] == [320, 200]
+    assert result["client_origin"] == [100, 120]
     assert calls == [(260, 220, "left", 1)]
 
 
@@ -115,6 +117,34 @@ def test_mouse_click_with_missing_frame_id_returns_error(monkeypatch) -> None:
 
     assert result["success"] is False
     assert result["error_code"] == "FRAME_NOT_FOUND"
+
+
+def test_capture_scope_without_frame_id_returns_error(monkeypatch) -> None:
+    monkeypatch.setattr(daemon.targets, "resolve_target", lambda target: _target())
+
+    result = daemon._h_mouse_click(
+        {
+            "target": {"pid": 2},
+            "x": 10,
+            "y": 10,
+            "scope": "capture",
+        }
+    )
+
+    assert result["success"] is False
+    assert result["error_code"] == "FRAME_NOT_FOUND"
+
+
+def test_missing_target_param_returns_structured_error(monkeypatch) -> None:
+    def raise_value_error(target):
+        raise ValueError("target must include pid or hwnd")
+
+    monkeypatch.setattr(daemon.targets, "resolve_target", raise_value_error)
+
+    result = daemon._h_mouse_click({"x": 10, "y": 10})
+
+    assert result["success"] is False
+    assert result["error_code"] == "TARGET_NOT_FOUND"
 
 
 def test_mouse_drag_and_scroll_are_frame_aware(monkeypatch) -> None:

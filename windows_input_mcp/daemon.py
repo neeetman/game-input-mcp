@@ -126,7 +126,10 @@ def _frame_geometry(frame_id: str | None) -> FrameGeometry | None:
 
 
 def _resolve_target(p: dict) -> tuple[TargetInfo | None, dict | None]:
-    target = targets.resolve_target(_target_param(p))
+    try:
+        target = targets.resolve_target(_target_param(p))
+    except ValueError:
+        target = None
     if target is None:
         return None, error_response(
             "TARGET_NOT_FOUND",
@@ -135,6 +138,21 @@ def _resolve_target(p: dict) -> tuple[TargetInfo | None, dict | None]:
             params=p,
         )
     return target, None
+
+
+def _resolve_frame(scope: str, frame_id: str | None) -> tuple[FrameGeometry | None, dict | None]:
+    try:
+        frame = _frame_geometry(frame_id)
+    except KeyError:
+        frame = None
+    if scope in {"capture", "normalized"} and frame is None:
+        return None, error_response(
+            "FRAME_NOT_FOUND",
+            "Frame metadata was not found",
+            retryable=True,
+            frame_id=frame_id,
+        )
+    return frame, None
 
 
 def _h_mouse_click(p: dict) -> dict:
@@ -146,16 +164,10 @@ def _h_mouse_click(p: dict) -> dict:
         win32.focus_window(target.pid)
         time.sleep(0.05)
 
-    scope = p.get("scope", "capture" if p.get("frame_id") else "framebuffer")
-    try:
-        frame = _frame_geometry(p.get("frame_id"))
-    except KeyError:
-        return error_response(
-            "FRAME_NOT_FOUND",
-            "Frame metadata was not found",
-            retryable=True,
-            frame_id=p.get("frame_id"),
-        )
+    scope = p.get("scope", "capture" if p.get("frame_id") else "framebuffer").lower().strip()
+    frame, error = _resolve_frame(scope, p.get("frame_id"))
+    if error is not None:
+        return error
 
     sx, sy = point_to_screen(
         p["x"],
@@ -173,6 +185,8 @@ def _h_mouse_click(p: dict) -> dict:
         "screen_coords": [sx, sy],
         "scope": scope,
         "translated_from": [p["x"], p["y"]],
+        "client_size": list(target.client_size),
+        "client_origin": list(target.client_screen_origin),
         "target": target.to_dict(),
     }
 
@@ -186,16 +200,10 @@ def _h_mouse_drag(p: dict) -> dict:
         win32.focus_window(target.pid)
         time.sleep(0.05)
 
-    scope = p.get("scope", "capture" if p.get("frame_id") else "framebuffer")
-    try:
-        frame = _frame_geometry(p.get("frame_id"))
-    except KeyError:
-        return error_response(
-            "FRAME_NOT_FOUND",
-            "Frame metadata was not found",
-            retryable=True,
-            frame_id=p.get("frame_id"),
-        )
+    scope = p.get("scope", "capture" if p.get("frame_id") else "framebuffer").lower().strip()
+    frame, error = _resolve_frame(scope, p.get("frame_id"))
+    if error is not None:
+        return error
 
     from_screen = point_to_screen(
         p["from_x"],
@@ -235,16 +243,10 @@ def _h_scroll(p: dict) -> dict:
         win32.focus_window(target.pid)
         time.sleep(0.05)
 
-    scope = p.get("scope", "capture" if p.get("frame_id") else "framebuffer")
-    try:
-        frame = _frame_geometry(p.get("frame_id"))
-    except KeyError:
-        return error_response(
-            "FRAME_NOT_FOUND",
-            "Frame metadata was not found",
-            retryable=True,
-            frame_id=p.get("frame_id"),
-        )
+    scope = p.get("scope", "capture" if p.get("frame_id") else "framebuffer").lower().strip()
+    frame, error = _resolve_frame(scope, p.get("frame_id"))
+    if error is not None:
+        return error
 
     sx, sy = point_to_screen(
         p["x"],
