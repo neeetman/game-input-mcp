@@ -13,7 +13,7 @@ the install hint instead of crashing the MCP server.
 """
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from mcp.server.fastmcp import FastMCP
 
@@ -30,6 +30,43 @@ def _call(method: str, **params) -> dict:
         return {"success": False, "found": False, "error": str(e)}
     except Exception as e:  # noqa: BLE001
         return {"success": False, "error": f"ipc error: {type(e).__name__}: {e}"}
+
+
+@mcp.tool()
+def list_targets() -> dict:
+    """List visible target windows that can be captured or driven."""
+    return _call("list_targets")
+
+
+@mcp.tool()
+def get_target_info(target: dict[str, Any]) -> dict:
+    """Return resolved target metadata for a pid/hwnd target object."""
+    return _call("get_target_info", target=target)
+
+
+@mcp.tool()
+def focus_target(target: dict[str, Any]) -> dict:
+    """Bring a pid/hwnd target object to the foreground."""
+    return _call("focus_target", target=target)
+
+
+@mcp.tool()
+def capture(
+    target: dict[str, Any],
+    region: list[int] | None = None,
+    scope: Literal["client", "screen"] = "client",
+    backend: Literal["auto", "dxcam", "mss", "pillow"] = "auto",
+    max_width: int = 1920,
+) -> dict:
+    """Capture target pixels and return frame metadata plus image_path."""
+    return _call(
+        "capture",
+        target=target,
+        region=region,
+        scope=scope,
+        backend=backend,
+        max_width=max_width,
+    )
 
 
 @mcp.tool()
@@ -73,7 +110,8 @@ def mouse_click(
     x: int,
     y: int,
     button: Literal["left", "right", "middle"] = "left",
-    scope: Literal["framebuffer", "client", "screen"] = "framebuffer",
+    scope: Literal["framebuffer", "capture", "client", "screen"] = "framebuffer",
+    frame_id: str | None = None,
     clicks: int = 1,
     framebuffer_width: int | None = None,
     framebuffer_height: int | None = None,
@@ -94,8 +132,10 @@ def mouse_click(
     """
     return _call(
         "mouse_click",
-        pid=pid, x=x, y=y,
+        pid=pid, target={"pid": pid},
+        x=x, y=y,
         button=button, scope=scope, clicks=clicks,
+        frame_id=frame_id,
         framebuffer_width=framebuffer_width,
         framebuffer_height=framebuffer_height,
         activate=activate,
@@ -110,7 +150,8 @@ def mouse_drag(
     to_x: int,
     to_y: int,
     button: Literal["left", "right"] = "left",
-    scope: Literal["framebuffer", "client", "screen"] = "framebuffer",
+    scope: Literal["framebuffer", "capture", "client", "screen"] = "framebuffer",
+    frame_id: str | None = None,
     framebuffer_width: int | None = None,
     framebuffer_height: int | None = None,
     steps: int = 10,
@@ -119,8 +160,9 @@ def mouse_drag(
     """Drag from (from_x, from_y) to (to_x, to_y). `steps` controls smoothness."""
     return _call(
         "mouse_drag",
-        pid=pid, from_x=from_x, from_y=from_y, to_x=to_x, to_y=to_y,
-        button=button, scope=scope,
+        pid=pid, target={"pid": pid},
+        from_x=from_x, from_y=from_y, to_x=to_x, to_y=to_y,
+        button=button, scope=scope, frame_id=frame_id,
         framebuffer_width=framebuffer_width,
         framebuffer_height=framebuffer_height,
         steps=steps, activate=activate,
@@ -133,7 +175,8 @@ def scroll(
     x: int,
     y: int,
     delta: int = 120,
-    scope: Literal["framebuffer", "client", "screen"] = "framebuffer",
+    scope: Literal["framebuffer", "capture", "client", "screen"] = "framebuffer",
+    frame_id: str | None = None,
     framebuffer_width: int | None = None,
     framebuffer_height: int | None = None,
     activate: bool = True,
@@ -141,7 +184,8 @@ def scroll(
     """Mouse wheel scroll at (x, y). delta > 0 = up, < 0 = down. 120 = one notch."""
     return _call(
         "scroll",
-        pid=pid, x=x, y=y, delta=delta, scope=scope,
+        pid=pid, target={"pid": pid}, x=x, y=y, delta=delta, scope=scope,
+        frame_id=frame_id,
         framebuffer_width=framebuffer_width,
         framebuffer_height=framebuffer_height,
         activate=activate,
