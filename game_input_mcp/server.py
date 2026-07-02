@@ -3,7 +3,7 @@ scope auto-translation.
 
 This process runs at the same integrity level as Claude Code (medium). All
 real work — SendInput, focus_window, etc. — is delegated over a per-user
-named pipe to the windows-input-daemon scheduled task (high IL, see
+named pipe to the game-input-daemon scheduled task (high IL, see
 daemon.py / install.py). Doing input from a high-IL helper is what allows
 the agent to drive games that are themselves elevated (UIPI blocks medium→
 high SendInput).
@@ -19,7 +19,7 @@ from mcp.server.fastmcp import FastMCP
 
 from .ipc import Client, DaemonUnavailable
 
-mcp = FastMCP("windows-input")
+mcp = FastMCP("game-input")
 _client = Client()
 
 
@@ -264,7 +264,7 @@ def type_text(target: dict[str, Any], text: str, activate: bool = True) -> dict:
 
 
 def main() -> None:
-    """Entry point for `windows-input-mcp` console script."""
+    """Entry point for `game-input-mcp` console script."""
     mcp.run()
 
 

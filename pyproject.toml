@@ -1,5 +1,5 @@
 [project]
-name = "windows-input-mcp"
+name = "game-input-mcp"
 version = "0.1.0"
 description = "MCP server for Windows game screenshots and OS-level keyboard/mouse input with capture↔client↔screen coordinate translation."
 requires-python = ">=3.10"
@@ -18,13 +18,13 @@ dev = [
 ]
 
 [project.scripts]
-windows-input-mcp = "windows_input_mcp.server:main"
-windows-input-daemon = "windows_input_mcp.daemon:main"
-windows-input-install = "windows_input_mcp.install:main"
+game-input-mcp = "game_input_mcp.server:main"
+game-input-daemon = "game_input_mcp.daemon:main"
+game-input-install = "game_input_mcp.install:main"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["windows_input_mcp"]
+packages = ["game_input_mcp"]

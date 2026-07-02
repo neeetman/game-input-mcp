@@ -3,7 +3,7 @@
 and executes the win32.py primitives on behalf of the (medium-IL) MCP server.
 
 Run manually for development:
-    python -m windows_input_mcp.daemon
+    python -m game_input_mcp.daemon
 
 The handlers below absorb the focus+translate+send orchestration that used
 to live in server.py, so the MCP tool side becomes one IPC call per tool.
@@ -24,7 +24,7 @@ from .frames import FrameCache
 from .geometry import FrameGeometry, point_to_screen
 from .models import Rect, TargetInfo, error_response, ok_response
 
-log = logging.getLogger("windows-input-daemon")
+log = logging.getLogger("game-input-daemon")
 
 FRAME_CACHE = FrameCache()
 
@@ -407,7 +407,7 @@ def build_user_scoped_security_attributes():
 # === Entry point ============================================================
 
 def _log_path() -> Path:
-    base = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "windows-input-mcp"
+    base = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "game-input-mcp"
     base.mkdir(parents=True, exist_ok=True)
     return base / "daemon.log"
 

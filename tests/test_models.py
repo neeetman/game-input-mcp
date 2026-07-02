@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from windows_input_mcp.models import (
+from game_input_mcp.models import (
     Rect,
     TargetInfo,
     TargetSpec,

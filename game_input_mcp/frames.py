@@ -15,7 +15,7 @@ _FRAME_ID_RE = re.compile(r"^frame_[0-9a-f]{32}$")
 
 
 def default_frame_cache_dir() -> Path:
-    base = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "windows-input-mcp"
+    base = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "game-input-mcp"
     return base / "frames"
 
 

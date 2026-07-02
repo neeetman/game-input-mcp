@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from windows_input_mcp.geometry import FrameGeometry, point_to_screen
-from windows_input_mcp.models import Rect, TargetInfo
+from game_input_mcp.geometry import FrameGeometry, point_to_screen
+from game_input_mcp.models import Rect, TargetInfo
 
 
 def _target() -> TargetInfo:

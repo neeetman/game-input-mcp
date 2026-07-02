@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from windows_input_mcp import server
+from game_input_mcp import server
 
 
 def test_list_targets_calls_daemon(monkeypatch) -> None:

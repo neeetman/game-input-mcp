@@ -1,5 +1,5 @@
 r"""Named-pipe IPC between the (non-admin) MCP server and the (admin)
-windows-input-daemon.
+game-input-daemon.
 
 Wire format: 4-byte big-endian unsigned length prefix, then UTF-8 JSON.
 
@@ -12,7 +12,7 @@ Response shape (success):
 Response shape (error):
     {"id": <int>, "ok": false, "error": "<message>"}
 
-The pipe name is per-user: \\.\pipe\windows-input-mcp.<user-sid>. Daemon and
+The pipe name is per-user: \\.\pipe\game-input-mcp.<user-sid>. Daemon and
 client both derive it from the current user's token, so they always agree
 even when daemon runs at high IL via a scheduled task — elevation does not
 change the user SID, only the integrity level.
@@ -33,7 +33,7 @@ import win32pipe
 import win32security
 import winerror
 
-PIPE_PREFIX = r"\\.\pipe\windows-input-mcp"
+PIPE_PREFIX = r"\\.\pipe\game-input-mcp"
 _LENGTH_HEADER = struct.Struct(">I")  # 4-byte big-endian unsigned
 _MAX_FRAME_BYTES = 8 * 1024 * 1024     # 8 MiB safety cap
 
@@ -153,7 +153,7 @@ class Client:
                 if e.winerror == winerror.ERROR_FILE_NOT_FOUND:
                     raise DaemonUnavailable(
                         f"daemon pipe {self._name} not found. "
-                        f"Run: python -m windows_input_mcp.install"
+                        f"Run: python -m game_input_mcp.install"
                     ) from e
                 if e.winerror == winerror.ERROR_PIPE_BUSY and attempt < 2:
                     win32pipe.WaitNamedPipe(self._name, 1000)

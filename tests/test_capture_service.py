@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from PIL import Image
 
-from windows_input_mcp import targets
-from windows_input_mcp.capture import service
-from windows_input_mcp.frames import FrameCache
-from windows_input_mcp.models import Rect, TargetInfo
+from game_input_mcp import targets
+from game_input_mcp.capture import service
+from game_input_mcp.frames import FrameCache
+from game_input_mcp.models import Rect, TargetInfo
 
 
 def _target() -> TargetInfo:

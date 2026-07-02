@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from windows_input_mcp import daemon
-from windows_input_mcp.models import Rect, TargetInfo
+from game_input_mcp import daemon
+from game_input_mcp.models import Rect, TargetInfo
 
 
 def _target() -> TargetInfo:

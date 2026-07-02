@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from windows_input_mcp.input.keys import resolve_key
+from game_input_mcp.input.keys import resolve_key
 
 
 def test_resolve_wasd_as_scancode() -> None:

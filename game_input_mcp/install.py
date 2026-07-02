@@ -1,4 +1,4 @@
-"""One-time installer / lifecycle helper for the windows-input-daemon
+"""One-time installer / lifecycle helper for the game-input-daemon
 scheduled task.
 
 The daemon is registered as an ONLOGON task with /RL HIGHEST so it auto-
@@ -6,10 +6,10 @@ starts at every user login pre-elevated, with no UAC prompt at runtime —
 schtasks handles the elevation grant once, at install time.
 
 Usage:
-    python -m windows_input_mcp.install              # install + start now
-    python -m windows_input_mcp.install --uninstall  # remove
-    python -m windows_input_mcp.install --status     # check task state
-    python -m windows_input_mcp.install --restart    # stop + start now
+    python -m game_input_mcp.install              # install + start now
+    python -m game_input_mcp.install --uninstall  # remove
+    python -m game_input_mcp.install --status     # check task state
+    python -m game_input_mcp.install --restart    # stop + start now
 
 Install/uninstall require an elevated shell — we just check IsUserAnAdmin()
 and refuse with a clear message rather than trying to self-elevate, because
@@ -24,7 +24,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-TASK_NAME = "WindowsInputDaemon"
+TASK_NAME = "GameInputDaemon"
 
 
 def _is_admin() -> bool:
@@ -65,13 +65,13 @@ def install() -> None:
         raise SystemExit(
             "install requires elevation.\n"
             "Open PowerShell as Administrator and re-run:\n"
-            f"  {sys.executable} -m windows_input_mcp.install"
+            f"  {sys.executable} -m game_input_mcp.install"
         )
 
     py = _python_exe_for_task()
     # schtasks /TR takes a single string; embed quotes around python path to
     # survive paths with spaces (e.g. Program Files).
-    tr = f'"{py}" -m windows_input_mcp.daemon'
+    tr = f'"{py}" -m game_input_mcp.daemon'
 
     _schtasks(
         "/Create",

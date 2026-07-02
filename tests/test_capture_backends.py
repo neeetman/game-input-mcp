@@ -3,9 +3,9 @@ from __future__ import annotations
 import pytest
 from PIL import Image
 
-import windows_input_mcp.capture.base as base
-from windows_input_mcp.capture.base import CaptureBackend, capture_region
-from windows_input_mcp.models import Rect
+import game_input_mcp.capture.base as base
+from game_input_mcp.capture.base import CaptureBackend, capture_region
+from game_input_mcp.models import Rect
 
 
 @pytest.fixture(autouse=True)
@@ -31,7 +31,7 @@ def test_backend_subclass_registers_by_name() -> None:
 def test_capture_package_import_registers_backends():
     import importlib
 
-    capture = importlib.import_module("windows_input_mcp.capture")
+    capture = importlib.import_module("game_input_mcp.capture")
     assert {"dxcam", "mss", "pillow"} <= set(capture.CaptureBackend.registry)
     assert capture.CaptureBackend is CaptureBackend
     assert capture.CaptureResult.__name__ == "CaptureResult"

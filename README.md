@@ -45,7 +45,7 @@ The MCP server is a medium-integrity client. Real input and capture work is
 delegated over a per-user named pipe to an elevated daemon:
 
 ```text
-MCP client -> windows_input_mcp.server -> named pipe -> windows_input_mcp.daemon
+MCP client -> game_input_mcp.server -> named pipe -> game_input_mcp.daemon
 ```
 
 The pipe name is scoped to the current user SID and the daemon keeps a
@@ -102,21 +102,21 @@ Requires Windows and Python 3.10 or newer.
 Run from an elevated shell:
 
 ```powershell
-python -m windows_input_mcp.install
+python -m game_input_mcp.install
 ```
 
 Lifecycle commands:
 
 ```powershell
-python -m windows_input_mcp.install --status
-python -m windows_input_mcp.install --restart
-python -m windows_input_mcp.install --uninstall
+python -m game_input_mcp.install --status
+python -m game_input_mcp.install --restart
+python -m game_input_mcp.install --uninstall
 ```
 
 Development daemon:
 
 ```powershell
-python -m windows_input_mcp.daemon
+python -m game_input_mcp.daemon
 ```
 
 ## MCP Registration
@@ -124,10 +124,10 @@ python -m windows_input_mcp.daemon
 ```json
 {
   "mcpServers": {
-    "windows-input": {
+    "game-input": {
       "type": "stdio",
       "command": "python",
-      "args": ["-m", "windows_input_mcp.server"]
+      "args": ["-m", "game_input_mcp.server"]
     }
   }
 }
@@ -139,7 +139,7 @@ error and the MCP server stays alive.
 ## Smoke Test
 
 ```powershell
-python -m windows_input_mcp.install --restart
+python -m game_input_mcp.install --restart
 notepad
 ```
 

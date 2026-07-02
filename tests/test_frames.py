@@ -4,7 +4,7 @@ import json
 
 from PIL import Image
 
-from windows_input_mcp.frames import FrameCache
+from game_input_mcp.frames import FrameCache
 
 
 def test_store_writes_png_and_json_metadata(tmp_path) -> None:

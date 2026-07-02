@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from windows_input_mcp import targets
-from windows_input_mcp.models import Rect, TargetInfo
+from game_input_mcp import targets
+from game_input_mcp.models import Rect, TargetInfo
 
 
 @dataclass

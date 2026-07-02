@@ -5,7 +5,7 @@ from dataclasses import dataclass
 
 from PIL import Image
 
-from windows_input_mcp.models import Rect
+from game_input_mcp.models import Rect
 
 log = logging.getLogger(__name__)
 
