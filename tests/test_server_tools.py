@@ -61,3 +61,22 @@ def test_compat_mouse_click_still_uses_pid(monkeypatch) -> None:
             "activate": False,
         },
     )]
+
+
+def test_keyboard_tools_call_new_daemon_methods(monkeypatch) -> None:
+    calls = []
+    monkeypatch.setattr(server, "_call", lambda method, **params: calls.append((method, params)) or {"success": True})
+
+    assert server.key_down({"pid": 2}, key="w")["success"] is True
+    assert server.key_up({"pid": 2}, key="w", mode="vk")["success"] is True
+    assert server.tap_key({"pid": 2}, key="space", hold_ms=5)["success"] is True
+    assert server.hotkey({"pid": 2}, keys=["ctrl", "s"])["success"] is True
+    assert server.type_text({"pid": 2}, text="hello")["success"] is True
+
+    assert calls == [
+        ("key_down", {"target": {"pid": 2}, "key": "w", "mode": "scancode", "activate": True}),
+        ("key_up", {"target": {"pid": 2}, "key": "w", "mode": "vk", "activate": True}),
+        ("tap_key", {"target": {"pid": 2}, "key": "space", "mode": "scancode", "hold_ms": 5, "activate": True}),
+        ("hotkey", {"target": {"pid": 2}, "keys": ["ctrl", "s"], "mode": "vk", "activate": True}),
+        ("type_text", {"target": {"pid": 2}, "text": "hello", "activate": True}),
+    ]

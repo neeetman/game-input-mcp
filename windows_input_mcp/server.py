@@ -210,6 +210,59 @@ def send_keys(pid: int, keys: str, activate: bool = True) -> dict:
     return _call("send_keys", pid=pid, keys=keys, activate=activate)
 
 
+@mcp.tool()
+def key_down(
+    target: dict[str, Any],
+    key: str,
+    mode: Literal["scancode", "vk"] = "scancode",
+    activate: bool = True,
+) -> dict:
+    return _call("key_down", target=target, key=key, mode=mode, activate=activate)
+
+
+@mcp.tool()
+def key_up(
+    target: dict[str, Any],
+    key: str,
+    mode: Literal["scancode", "vk"] = "scancode",
+    activate: bool = True,
+) -> dict:
+    return _call("key_up", target=target, key=key, mode=mode, activate=activate)
+
+
+@mcp.tool()
+def tap_key(
+    target: dict[str, Any],
+    key: str,
+    mode: Literal["scancode", "vk"] = "scancode",
+    hold_ms: int = 30,
+    activate: bool = True,
+) -> dict:
+    return _call(
+        "tap_key",
+        target=target,
+        key=key,
+        mode=mode,
+        hold_ms=hold_ms,
+        activate=activate,
+    )
+
+
+@mcp.tool()
+def hotkey(
+    target: dict[str, Any],
+    keys: list[str],
+    mode: Literal["scancode", "vk"] = "vk",
+    activate: bool = True,
+) -> dict:
+    return _call("hotkey", target=target, keys=keys, mode=mode, activate=activate)
+
+
+@mcp.tool()
+def type_text(target: dict[str, Any], text: str, activate: bool = True) -> dict:
+    return _call("type_text", target=target, text=text, activate=activate)
+
+
 def main() -> None:
     """Entry point for `windows-input-mcp` console script."""
     mcp.run()

@@ -9,6 +9,9 @@ from __future__ import annotations
 import ctypes
 from ctypes import wintypes
 from dataclasses import dataclass
+import time
+
+from .input.keys import KeyStroke, resolve_key
 
 user32 = ctypes.WinDLL("user32", use_last_error=True)
 kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -43,6 +46,7 @@ MOUSEEVENTF_ABSOLUTE = 0x8000
 KEYEVENTF_KEYUP = 0x0002
 KEYEVENTF_UNICODE = 0x0004
 KEYEVENTF_SCANCODE = 0x0008
+KEYEVENTF_EXTENDEDKEY = 0x0001
 
 VK_RETURN = 0x0D
 VK_ESCAPE = 0x1B
@@ -572,6 +576,47 @@ def send_keys(keys: str) -> bool:
         return True
     sent = _send_inputs(inputs)
     return sent == len(inputs)
+
+
+def _keystroke_input(stroke: KeyStroke, key_up: bool) -> INPUT:
+    flags = KEYEVENTF_KEYUP if key_up else 0
+    if stroke.scan_code is not None:
+        flags |= KEYEVENTF_SCANCODE
+        if stroke.extended:
+            flags |= KEYEVENTF_EXTENDEDKEY
+        return INPUT(type=INPUT_KEYBOARD, u=_INPUTunion(ki=KEYBDINPUT(
+            wVk=0,
+            wScan=stroke.scan_code,
+            dwFlags=flags,
+            time=0,
+            dwExtraInfo=None
+        )))
+    return INPUT(type=INPUT_KEYBOARD, u=_INPUTunion(ki=KEYBDINPUT(
+        wVk=stroke.vk or 0,
+        wScan=0,
+        dwFlags=flags,
+        time=0,
+        dwExtraInfo=None
+    )))
+
+
+def send_key_down(key: str, mode: str = "scancode") -> int:
+    stroke = resolve_key(key, mode)
+    return _send_inputs([_keystroke_input(stroke, key_up=False)])
+
+
+def send_key_up(key: str, mode: str = "scancode") -> int:
+    stroke = resolve_key(key, mode)
+    return _send_inputs([_keystroke_input(stroke, key_up=True)])
+
+
+def tap_key(key: str, mode: str = "scancode", hold_ms: int = 30) -> int:
+    stroke = resolve_key(key, mode)
+    sent = _send_inputs([_keystroke_input(stroke, key_up=False)])
+    if hold_ms > 0:
+        time.sleep(hold_ms / 1000.0)
+    sent += _send_inputs([_keystroke_input(stroke, key_up=True)])
+    return sent
 
 
 def _vk_input(vk: int) -> list[INPUT]:

@@ -148,6 +148,15 @@ def _resolve_frame(scope: str, frame_id: str | None) -> tuple[FrameGeometry | No
     return frame, None
 
 
+def _focus_if_requested(target_param, activate: bool) -> tuple[bool, dict | None]:
+    if not activate:
+        return True, None
+    target, error = _resolve_target({"target": target_param})
+    if error is not None:
+        return False, error
+    return win32.focus_window(target.pid), None
+
+
 def _h_mouse_click(p: dict) -> dict:
     target, error = _resolve_target(p)
     if error is not None:
@@ -263,6 +272,77 @@ def _h_send_keys(p: dict) -> dict:
     return {"success": ok, "keys": p["keys"]}
 
 
+def _h_key_down(p: dict) -> dict:
+    focused, error = _focus_if_requested(_target_param(p), p.get("activate", True))
+    if error is not None:
+        return error
+    sent = win32.send_key_down(p["key"], p.get("mode", "scancode"))
+    return ok_response(
+        success=sent == 1,
+        sent=sent,
+        key=p["key"],
+        mode=p.get("mode", "scancode"),
+        focused=focused,
+    )
+
+
+def _h_key_up(p: dict) -> dict:
+    focused, error = _focus_if_requested(_target_param(p), p.get("activate", True))
+    if error is not None:
+        return error
+    sent = win32.send_key_up(p["key"], p.get("mode", "scancode"))
+    return ok_response(
+        success=sent == 1,
+        sent=sent,
+        key=p["key"],
+        mode=p.get("mode", "scancode"),
+        focused=focused,
+    )
+
+
+def _h_tap_key(p: dict) -> dict:
+    focused, error = _focus_if_requested(_target_param(p), p.get("activate", True))
+    if error is not None:
+        return error
+    sent = win32.tap_key(p["key"], p.get("mode", "scancode"), p.get("hold_ms", 30))
+    return ok_response(
+        success=sent == 2,
+        sent=sent,
+        key=p["key"],
+        mode=p.get("mode", "scancode"),
+        focused=focused,
+    )
+
+
+def _h_hotkey(p: dict) -> dict:
+    focused, error = _focus_if_requested(_target_param(p), p.get("activate", True))
+    if error is not None:
+        return error
+    keys = p["keys"]
+    mode = p.get("mode", "vk")
+    sent = 0
+    for key in keys:
+        sent += win32.send_key_down(key, mode)
+    for key in reversed(keys):
+        sent += win32.send_key_up(key, mode)
+    expected = len(keys) * 2
+    return ok_response(
+        success=sent == expected,
+        sent=sent,
+        keys=keys,
+        mode=mode,
+        focused=focused,
+    )
+
+
+def _h_type_text(p: dict) -> dict:
+    focused, error = _focus_if_requested(_target_param(p), p.get("activate", True))
+    if error is not None:
+        return error
+    sent = win32.send_keys(p["text"])
+    return ok_response(sent=int(bool(sent)), text=p["text"], focused=focused)
+
+
 HANDLERS = {
     "list_targets": _h_list_targets,
     "get_target_info": _h_get_target_info,
@@ -274,6 +354,11 @@ HANDLERS = {
     "mouse_drag": _h_mouse_drag,
     "scroll": _h_scroll,
     "send_keys": _h_send_keys,
+    "key_down": _h_key_down,
+    "key_up": _h_key_up,
+    "tap_key": _h_tap_key,
+    "hotkey": _h_hotkey,
+    "type_text": _h_type_text,
 }
 
 

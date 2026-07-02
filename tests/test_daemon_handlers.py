@@ -274,6 +274,84 @@ def test_send_keys_still_pid_compatible(monkeypatch) -> None:
     assert result == {"success": True, "keys": "abc"}
 
 
+def test_key_handlers_use_send_key_counts(monkeypatch) -> None:
+    monkeypatch.setattr(daemon.targets, "resolve_target", lambda target: _target())
+    monkeypatch.setattr(daemon.win32, "focus_window", lambda pid: True)
+    monkeypatch.setattr(daemon.win32, "send_key_down", lambda key, mode="scancode": 1)
+
+    result = daemon._h_key_down(
+        {"target": {"pid": 2}, "key": "w", "mode": "scancode", "activate": True}
+    )
+
+    assert result == {
+        "success": True,
+        "sent": 1,
+        "key": "w",
+        "mode": "scancode",
+        "focused": True,
+    }
+
+
+def test_key_handlers_work_with_activate_false_without_target(monkeypatch) -> None:
+    monkeypatch.setattr(daemon.win32, "send_key_up", lambda key, mode="scancode": 1)
+
+    assert daemon._h_key_up({"key": "w", "activate": False}) == {
+        "success": True,
+        "sent": 1,
+        "key": "w",
+        "mode": "scancode",
+        "focused": True,
+    }
+
+
+def test_key_handlers_return_structured_target_errors(monkeypatch) -> None:
+    def raise_value_error(target):
+        raise ValueError("target must include pid or hwnd")
+
+    monkeypatch.setattr(daemon.targets, "resolve_target", raise_value_error)
+
+    result = daemon._h_key_down({"target": {}, "key": "w"})
+
+    assert result["success"] is False
+    assert result["error_code"] == "TARGET_NOT_FOUND"
+
+
+def test_hotkey_handler_sends_down_then_up(monkeypatch) -> None:
+    sequence: list[str] = []
+    monkeypatch.setattr(daemon.targets, "resolve_target", lambda target: _target())
+    monkeypatch.setattr(daemon.win32, "focus_window", lambda pid: True)
+    monkeypatch.setattr(daemon.win32, "send_key_down", lambda key, mode="scancode": sequence.append(f"down:{key}") or 1)
+    monkeypatch.setattr(daemon.win32, "send_key_up", lambda key, mode="scancode": sequence.append(f"up:{key}") or 1)
+
+    result = daemon._h_hotkey(
+        {"target": {"pid": 2}, "keys": ["ctrl", "c"], "mode": "vk", "activate": True}
+    )
+
+    assert result == {
+        "success": True,
+        "sent": 4,
+        "keys": ["ctrl", "c"],
+        "mode": "vk",
+        "focused": True,
+    }
+    assert sequence == ["down:ctrl", "down:c", "up:c", "up:ctrl"]
+
+
+def test_type_text_handler_wraps_send_keys_result(monkeypatch) -> None:
+    monkeypatch.setattr(daemon.win32, "send_keys", lambda text: True)
+
+    result = daemon._h_type_text(
+        {"target": {"pid": 2}, "text": "ok", "activate": False}
+    )
+
+    assert result == {
+        "success": True,
+        "sent": 1,
+        "text": "ok",
+        "focused": True,
+    }
+
+
 def test_get_window_info_and_focus_window_compatibility(monkeypatch) -> None:
     # Smoke coverage to ensure legacy handlers still render deterministic shapes.
     monkeypatch.setattr(
