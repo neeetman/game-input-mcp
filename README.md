@@ -1,94 +1,125 @@
-# windows-input-mcp
+# game-input-mcp
 
-OS-level Windows input MCP server for driving Unity games during
-`navigate-to-gameplay` workflow. Wraps Win32 SendInput + window
-manipulation with **framebuffer↔client↔screen scope auto-translation**
-so agents don't manually compute DPI / window offset / multi-monitor
-negative coordinates.
-
-## Why this exists
-
-Unity Explorer MCP's `simulate_key inject` fails for some games,
-`simulate_key os` requires foreground + sometimes hits Win32 error 87,
-`click_widget` doesn't work for self-custom Selectable subclasses or
-full-screen InputCatcher. Agent has to fall back to manual
-`Add-Type [DllImport("user32.dll")]` PowerShell on every call, which
-wastes turns and silently breaks when window position changes.
-
-This MCP gives agent stable input primitives with **scope abstraction**:
-
-| scope | (x, y) meaning |
-|---|---|
-| `framebuffer` | Unity render framebuffer pixel (matches UE screenshot dimensions) — auto-scaled to client area |
-| `client` | window client area pixel (relative to client top-left) |
-| `screen` | absolute desktop pixel (multi-monitor virtual screen) |
-
-DPI awareness is set to PER_MONITOR_AWARE_V2 at process start so all
-internal coords are physical pixels — no virtual-pixel surprises.
+general Windows game screenshot and input MCP. It captures target game windows
+through OS/display capture backends and drives foreground games through an
+elevated Win32 `SendInput` daemon.
 
 ## Tools
 
-- `get_window_info(pid)` — window rect / client size / screen origin / DPI / foreground status
-- `focus_window(pid)` — bring window to foreground (restore from minimized)
-- `mouse_click(pid, x, y, button?, scope?, clicks?, framebuffer_width?, framebuffer_height?, activate?)`
-- `mouse_drag(pid, from_x, from_y, to_x, to_y, button?, scope?, ..., steps?, activate?)`
-- `scroll(pid, x, y, delta?, scope?, ..., activate?)`
-- `send_keys(pid, keys, activate?)` — supports `{enter}` / `{esc}` / `{space}` / `{tab}` / arrows / `{f1}`–`{f12}` + literal Unicode chars
+- `list_targets()` - list visible candidate game windows.
+- `get_target_info(target)` - resolve pid/hwnd and return window, client, DPI,
+  monitor, and foreground metadata.
+- `capture(target, region?, scope?, backend?, max_width?)` - capture target
+  pixels and return `frame_id`, `image_path`, and geometry metadata.
+- `focus_target(target)` / `focus_window(pid)` - bring the target foreground.
+- `mouse_click(..., scope="capture", frame_id=...)`
+- `mouse_drag(..., scope="capture", frame_id=...)`
+- `scroll(..., scope="capture", frame_id=...)`
+- `key_down(target, key, mode="scancode")`
+- `key_up(target, key, mode="scancode")`
+- `tap_key(target, key, mode="scancode")`
+- `hotkey(target, keys, mode="vk")`
+- `type_text(target, text)` - foreground text entry helper.
+- `send_keys(pid, keys)` - compatibility text/key sequence helper.
+- `get_window_info(pid)` - compatibility window metadata helper.
 
-## Architecture: split MCP server + elevated daemon
+## Capture-To-Click Flow
 
+1. Call `capture({"pid": <game-pid>})`.
+2. Inspect the returned PNG at `image_path`.
+3. Click an image pixel using the returned frame:
+
+```python
+mouse_click(
+    pid=<game-pid>,
+    x=640,
+    y=360,
+    scope="capture",
+    frame_id="<frame_id>",
+)
 ```
-Claude Code (medium IL)
-   └── MCP server (medium IL)  ── named pipe ──▶  daemon (high IL)
-       windows_input_mcp.server                   windows_input_mcp.daemon
-       (thin client — 1 IPC call per tool)        (does the real SendInput)
+
+## Architecture
+
+The MCP server is a medium-integrity client. Real input and capture work is
+delegated over a per-user named pipe to an elevated daemon:
+
+```text
+MCP client -> windows_input_mcp.server -> named pipe -> windows_input_mcp.daemon
 ```
 
-UIPI (User Interface Privilege Isolation) blocks medium→high SendInput.
-Games launched with admin rights (anti-cheat, some launchers) therefore
-ignore input from a non-elevated MCP server. The daemon runs at high IL
-via a per-user `ONLOGON` scheduled task with `/RL HIGHEST`, registered
-once; from then on every login starts it automatically with no UAC prompt.
+The pipe name is scoped to the current user SID and the daemon keeps a
+file-backed frame cache under the user's local app data directory. Capture
+responses return paths and metadata instead of embedding image bytes in the
+MCP response.
 
-The named pipe is per-user: `\\.\pipe\windows-input-mcp.<SID>`, with a
-DACL granting only the owning user's SID — other users on the same
-machine cannot inject inputs through it.
+## Capture Backends
+
+`backend="auto"` tries registered backends in priority order:
+
+- `dxcam` for fast same-monitor region capture when available.
+- `mss` as the general Windows screen capture fallback.
+- `pillow` via `ImageGrab` as the final built-in fallback.
+
+`windows_graphics_capture` is not included in this v1.
+
+## Coordinate Scopes
+
+- `screen` - absolute desktop pixel coordinates.
+- `client` - target window client-area coordinates.
+- `capture` - pixel coordinates in the image returned by `capture(...)`.
+- `normalized` - 0.0-1.0 coordinates against the captured frame.
+- `framebuffer` - deprecated alias kept for older pid-based callers.
+
+When a mouse call includes `frame_id`, the daemon loads frame metadata from the
+cache and maps `capture` coordinates back to screen coordinates before calling
+`SendInput`.
+
+## Keyboard Input
+
+Use scan-code controls for game actions:
+
+```python
+key_down({"pid": <game-pid>}, "w", mode="scancode")
+key_up({"pid": <game-pid>}, "w", mode="scancode")
+tap_key({"pid": <game-pid>}, "space", mode="scancode")
+hotkey({"pid": <game-pid>}, ["ctrl", "s"], mode="vk")
+```
+
+Supported scan-code names include `w`, `a`, `s`, `d`, `space`, `shift`,
+`ctrl`, `alt`, `enter`, `esc`, `tab`, arrow keys, and `f1` through `f12`.
 
 ## Install
 
 ```powershell
-git clone https://github.com/neeetman/windows-input-mcp.git
-cd windows-input-mcp
-python -m pip install -e .
+python -m pip install -e .[dev]
 ```
 
-> Requires Windows + Python ≥ 3.10. `pywin32` is pulled in automatically.
+Requires Windows and Python 3.10 or newer.
 
-### One-time daemon install (requires elevated shell)
+### One-Time Daemon Install
+
+Run from an elevated shell:
 
 ```powershell
-# Open PowerShell as Administrator
 python -m windows_input_mcp.install
 ```
 
-This registers the `WindowsInputDaemon` scheduled task and starts it
-immediately. The task auto-starts on every subsequent login — no UAC
-prompt at runtime.
-
 Lifecycle commands:
+
 ```powershell
-python -m windows_input_mcp.install --status      # query schtasks state
-python -m windows_input_mcp.install --restart     # stop + start now
-python -m windows_input_mcp.install --uninstall   # remove the task
+python -m windows_input_mcp.install --status
+python -m windows_input_mcp.install --restart
+python -m windows_input_mcp.install --uninstall
 ```
 
-You can also run the daemon manually (non-elevated) for development —
-it will work for non-admin targets:
+Development daemon:
+
 ```powershell
 python -m windows_input_mcp.daemon
 ```
 
-## Register the MCP server in project .mcp.json
+## MCP Registration
 
 ```json
 {
@@ -102,50 +133,22 @@ python -m windows_input_mcp.daemon
 }
 ```
 
-After editing `.mcp.json`, run `/mcp` to reconnect.
+If the daemon is not running, tools return a structured unavailable-daemon
+error and the MCP server stays alive.
 
-If the daemon is not running, every tool returns
-`{"success": false, "error": "daemon pipe ... not found. Run: python -m windows_input_mcp.install"}`
-— the MCP server itself stays up regardless.
+## Smoke Test
 
-## Framebuffer scope walkthrough
-
-Agent takes UE screenshot of a 1280×819 framebuffer and sees a button at
-pixel (640, 410). The game window is 1600×1024 client size at screen
-origin (−1760, 39) on a secondary monitor.
-
-```
-mouse_click(
-  pid=<game pid>,
-  x=640, y=410,
-  scope="framebuffer",
-  framebuffer_width=1280,
-  framebuffer_height=819,
-)
+```powershell
+python -m windows_input_mcp.install --restart
+notepad
 ```
 
-Internally:
-1. `get_window_info` → client_size=(1600, 1024), client_screen_origin=(−1760, 39)
-2. Scale framebuffer (640, 410) to client (640 * 1600/1280, 410 * 1024/819) = (800, 512)
-3. Translate to screen (−1760 + 800, 39 + 512) = (−960, 551)
-4. `SendInput MOUSEEVENTF_ABSOLUTE` normalized against virtual screen
-   (including negative origin) — click lands correctly on the secondary
-   monitor.
+Then use an MCP client:
 
-Without this MCP the agent has to hand-write the same logic with
-PowerShell `Add-Type` + `[DllImport("user32.dll")]` every navigate
-session.
+1. `list_targets()`
+2. `capture({"pid": <notepad-pid>})`
+3. `mouse_click(pid=<notepad-pid>, x=20, y=20, scope="capture", frame_id="<frame_id>")`
+4. `tap_key({"pid": <notepad-pid>}, "space")`
 
-## Limitations
-
-- Windows only (uses Win32 API).
-- DPI awareness: if your terminal / Python invocation runs as
-  DPI-unaware, GetWindowRect may return scaled coords. The server sets
-  PER_MONITOR_AWARE_V2 at import; if you embed it differently, ensure
-  the host process is DPI-aware before any window query.
-- `send_keys` Unicode mode (`KEYEVENTF_UNICODE`) bypasses keyboard
-  layout — useful for typing CJK characters into chat boxes but may not
-  match games that read raw scan codes for movement keys. For game
-  movement use VK names like `{w}` is **not** supported; instead use
-  `{up}` / `{down}` / `{left}` / `{right}` for arrows, or extend
-  `KEY_NAME_TO_VK` in `win32.py` with the VK codes you need.
+The click should land in the captured client area and `tap_key` should send one
+key-down/key-up pair.

@@ -1,7 +1,7 @@
 [project]
 name = "windows-input-mcp"
 version = "0.1.0"
-description = "MCP server for OS-level Windows input (keyboard/mouse) with framebuffer↔client↔screen scope auto-translation. Designed for driving Unity games during navigate-to-gameplay workflow."
+description = "MCP server for Windows game screenshots and OS-level keyboard/mouse input with capture↔client↔screen coordinate translation."
 requires-python = ">=3.10"
 dependencies = [
     "mcp>=1.0.0",
