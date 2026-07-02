@@ -339,8 +339,8 @@ def _h_type_text(p: dict) -> dict:
     focused, error = _focus_if_requested(_target_param(p), p.get("activate", True))
     if error is not None:
         return error
-    sent = win32.send_keys(p["text"])
-    return ok_response(sent=int(bool(sent)), text=p["text"], focused=focused)
+    sent = bool(win32.send_keys(p["text"]))
+    return ok_response(success=sent, sent=int(sent), text=p["text"], focused=focused)
 
 
 HANDLERS = {

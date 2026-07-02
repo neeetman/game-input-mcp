@@ -351,6 +351,19 @@ def test_type_text_handler_wraps_send_keys_result(monkeypatch) -> None:
         "focused": True,
     }
 
+    monkeypatch.setattr(daemon.win32, "send_keys", lambda text: False)
+
+    failed = daemon._h_type_text(
+        {"target": {"pid": 2}, "text": "ok", "activate": False}
+    )
+
+    assert failed == {
+        "success": False,
+        "sent": 0,
+        "text": "ok",
+        "focused": True,
+    }
+
 
 def test_get_window_info_and_focus_window_compatibility(monkeypatch) -> None:
     # Smoke coverage to ensure legacy handlers still render deterministic shapes.
