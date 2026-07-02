@@ -61,8 +61,12 @@ Create `tests/test_project_baseline.py`:
 ```python
 from __future__ import annotations
 
-import tomllib
 from pathlib import Path
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # Python 3.10
+    import tomli as tomllib
 
 
 def _pyproject() -> dict:
@@ -121,6 +125,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0.0",
+    "tomli>=2.0.0; python_version < '3.11'",
 ]
 ```
 
