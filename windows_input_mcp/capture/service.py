@@ -4,6 +4,7 @@ from PIL import Image
 
 from windows_input_mcp import targets
 from windows_input_mcp.frames import FrameCache
+from windows_input_mcp.geometry import FrameGeometry
 from windows_input_mcp.models import Rect, TargetInfo, error_response, ok_response
 
 from .base import CaptureResult, capture_region
@@ -71,6 +72,12 @@ def capture_target(
 
     captured: CaptureResult = capture_region(rect, backend=backend)
     image, scale = _resize_if_needed(captured.image, max_width)
+    frame_geometry = FrameGeometry(
+        image_size=(image.width, image.height),
+        capture_rect_screen=rect,
+        client_rect_screen=resolved.client_rect_screen,
+        scale=scale,
+    )
     metadata = {
         "target": resolved.to_dict(),
         "image": {
@@ -81,11 +88,11 @@ def capture_target(
         },
         "geometry": {
             "window_rect_screen": resolved.window_rect.to_list(),
-            "client_rect_screen": resolved.client_rect_screen.to_list(),
-            "capture_rect_screen": rect.to_list(),
+            "client_rect_screen": frame_geometry.client_rect_screen.to_list(),
+            "capture_rect_screen": frame_geometry.capture_rect_screen.to_list(),
             "client_size": list(resolved.client_size),
             "dpi": resolved.dpi,
-            "frame_image_size": [image.width, image.height],
+            "frame_image_size": list(frame_geometry.image_size),
         },
         "backend": {"name": captured.backend, "mode": captured.mode},
     }

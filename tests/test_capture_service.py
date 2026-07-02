@@ -42,6 +42,30 @@ def test_capture_target_stores_frame_and_metadata(monkeypatch, tmp_path) -> None
     assert cache.get(result["frame_id"]) is not None
 
 
+def test_capture_target_builds_frame_geometry(monkeypatch, tmp_path) -> None:
+    built = []
+
+    class RecordingFrameGeometry(service.FrameGeometry):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            built.append(self)
+
+    monkeypatch.setattr(targets, "resolve_target", lambda target: _target())
+    monkeypatch.setattr(service, "FrameGeometry", RecordingFrameGeometry)
+    monkeypatch.setattr(
+        service,
+        "capture_region",
+        lambda rect, backend: service.CaptureResult(Image.new("RGB", (320, 200), "red"), "fake", "region"),
+    )
+
+    result = service.capture_target({"pid": 2}, backend="fake", cache=FrameCache(tmp_path))
+
+    assert result["success"] is True
+    assert len(built) == 1
+    assert built[0].image_size == (320, 200)
+    assert built[0].capture_rect_screen == Rect(100, 120, 420, 320)
+
+
 def test_capture_target_returns_structured_error_for_missing_target(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(targets, "resolve_target", lambda target: None)
 
