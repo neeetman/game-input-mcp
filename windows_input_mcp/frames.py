@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -9,6 +10,8 @@ from typing import Any, Callable
 from uuid import uuid4
 
 from PIL import Image
+
+_FRAME_ID_RE = re.compile(r"^frame_[0-9a-f]{32}$")
 
 
 def default_frame_cache_dir() -> Path:
@@ -53,12 +56,19 @@ class FrameCache:
         return FrameRecord(frame_id, image_path, metadata_path, enriched, created_at)
 
     def get(self, frame_id: str) -> FrameRecord | None:
+        if _FRAME_ID_RE.fullmatch(frame_id) is None:
+            return None
         image_path = self.directory / f"{frame_id}.png"
         metadata_path = self.directory / f"{frame_id}.json"
         if not image_path.exists() or not metadata_path.exists():
             return None
-        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-        created_at = float(metadata.get("created_at", 0.0))
+        try:
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            if not isinstance(metadata, dict):
+                return None
+            created_at = float(metadata.get("created_at", 0.0))
+        except (OSError, json.JSONDecodeError, TypeError, ValueError):
+            return None
         if self._now() - created_at > self.ttl_sec:
             return None
         return FrameRecord(frame_id, image_path, metadata_path, metadata, created_at)

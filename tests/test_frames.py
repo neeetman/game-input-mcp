@@ -27,6 +27,17 @@ def test_get_returns_none_for_missing_frame(tmp_path) -> None:
     assert cache.get("frame_missing") is None
 
 
+def test_get_rejects_path_traversal_frame_id(tmp_path) -> None:
+    cache_dir = tmp_path / "cache"
+    cache = FrameCache(cache_dir, ttl_sec=60, now=lambda: 10.0)
+    outside_id = "frame_00000000000000000000000000000000"
+    outside_metadata = {"frame_id": outside_id, "created_at": 1.0}
+    (tmp_path / f"{outside_id}.png").write_bytes(b"not a real image")
+    (tmp_path / f"{outside_id}.json").write_text(json.dumps(outside_metadata), encoding="utf-8")
+
+    assert cache.get(f"../{outside_id}") is None
+
+
 def test_cleanup_removes_expired_files(tmp_path) -> None:
     now = [1000.0]
     cache = FrameCache(tmp_path, ttl_sec=10, now=lambda: now[0])
@@ -38,3 +49,18 @@ def test_cleanup_removes_expired_files(tmp_path) -> None:
     assert removed == 2
     assert not record.image_path.exists()
     assert not record.metadata_path.exists()
+
+
+def test_cleanup_removes_corrupt_metadata_pair(tmp_path) -> None:
+    cache = FrameCache(tmp_path, ttl_sec=60)
+    frame_id = "frame_00000000000000000000000000000000"
+    image_path = tmp_path / f"{frame_id}.png"
+    metadata_path = tmp_path / f"{frame_id}.json"
+    image_path.write_bytes(b"not a real image")
+    metadata_path.write_text("{", encoding="utf-8")
+
+    removed = cache.cleanup()
+
+    assert removed == 2
+    assert not image_path.exists()
+    assert not metadata_path.exists()
