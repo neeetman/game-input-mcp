@@ -64,3 +64,14 @@ def test_cleanup_removes_corrupt_metadata_pair(tmp_path) -> None:
     assert removed == 2
     assert not image_path.exists()
     assert not metadata_path.exists()
+
+
+def test_cleanup_removes_orphaned_png(tmp_path) -> None:
+    cache = FrameCache(tmp_path, ttl_sec=60)
+    image_path = tmp_path / "frame_00000000000000000000000000000000.png"
+    image_path.write_bytes(b"not a real image")
+
+    removed = cache.cleanup()
+
+    assert removed == 1
+    assert not image_path.exists()

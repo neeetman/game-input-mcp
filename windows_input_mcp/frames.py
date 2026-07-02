@@ -85,4 +85,10 @@ class FrameCache:
                 if path.exists():
                     path.unlink()
                     removed += 1
+        for image_path in self.directory.glob("frame_*.png"):
+            frame_id = image_path.stem
+            metadata_path = self.directory / f"{frame_id}.json"
+            if not metadata_path.exists() and image_path.exists():
+                image_path.unlink()
+                removed += 1
         return removed

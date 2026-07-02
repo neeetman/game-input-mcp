@@ -136,7 +136,7 @@ def _resolve_target(p: dict) -> tuple[TargetInfo | None, dict | None]:
 def _resolve_frame(scope: str, frame_id: str | None) -> tuple[FrameGeometry | None, dict | None]:
     try:
         frame = _frame_geometry(frame_id)
-    except KeyError:
+    except (KeyError, TypeError, ValueError):
         frame = None
     if scope in {"capture", "normalized"} and frame is None:
         return None, error_response(
@@ -154,7 +154,14 @@ def _focus_if_requested(target_param, activate: bool) -> tuple[bool, dict | None
     target, error = _resolve_target({"target": target_param})
     if error is not None:
         return False, error
-    return win32.focus_window(target.pid), None
+    if not win32.focus_window(target.pid):
+        return False, error_response(
+            "FOCUS_FAILED",
+            "Target window could not be focused",
+            retryable=True,
+            target=target.to_dict(),
+        )
+    return True, None
 
 
 def _h_mouse_click(p: dict) -> dict:

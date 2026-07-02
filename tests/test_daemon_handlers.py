@@ -316,6 +316,23 @@ def test_key_handlers_return_structured_target_errors(monkeypatch) -> None:
     assert result["error_code"] == "TARGET_NOT_FOUND"
 
 
+def test_key_handlers_stop_when_focus_fails(monkeypatch) -> None:
+    sends = []
+    monkeypatch.setattr(daemon.targets, "resolve_target", lambda target: _target())
+    monkeypatch.setattr(daemon.win32, "focus_window", lambda pid: False)
+    monkeypatch.setattr(
+        daemon.win32,
+        "send_key_down",
+        lambda key, mode="scancode": sends.append(key) or 1,
+    )
+
+    result = daemon._h_key_down({"target": {"pid": 2}, "key": "w"})
+
+    assert result["success"] is False
+    assert result["error_code"] == "FOCUS_FAILED"
+    assert sends == []
+
+
 def test_hotkey_handler_sends_down_then_up(monkeypatch) -> None:
     sequence: list[str] = []
     monkeypatch.setattr(daemon.targets, "resolve_target", lambda target: _target())
@@ -363,6 +380,39 @@ def test_type_text_handler_wraps_send_keys_result(monkeypatch) -> None:
         "text": "ok",
         "focused": True,
     }
+
+
+def test_malformed_frame_metadata_returns_structured_error(monkeypatch) -> None:
+    monkeypatch.setattr(daemon.targets, "resolve_target", lambda target: _target())
+    monkeypatch.setattr(
+        daemon,
+        "FRAME_CACHE",
+        type(
+            "Cache",
+            (),
+            {
+                "get": lambda self, frame_id: type(
+                    "Record",
+                    (),
+                    {"metadata": {"geometry": {"capture_rect_screen": [1]}, "image": {"width": 1}}},
+                )(),
+            },
+        )(),
+    )
+
+    result = daemon._h_mouse_click(
+        {
+            "target": {"pid": 2},
+            "x": 1,
+            "y": 1,
+            "scope": "capture",
+            "frame_id": "frame_bad",
+            "activate": False,
+        }
+    )
+
+    assert result["success"] is False
+    assert result["error_code"] == "FRAME_NOT_FOUND"
 
 
 def test_get_window_info_and_focus_window_compatibility(monkeypatch) -> None:

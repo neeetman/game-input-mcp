@@ -70,7 +70,16 @@ def capture_target(
             scope=scope,
         )
 
-    captured: CaptureResult = capture_region(rect, backend=backend)
+    try:
+        captured: CaptureResult = capture_region(rect, backend=backend)
+    except Exception as exc:
+        return error_response(
+            "CAPTURE_FAILED",
+            "Capture backend failed",
+            retryable=True,
+            backend=backend,
+            reason=str(exc),
+        )
     image, scale = _resize_if_needed(captured.image, max_width)
     frame_geometry = FrameGeometry(
         image_size=(image.width, image.height),

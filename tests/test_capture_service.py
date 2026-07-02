@@ -112,3 +112,18 @@ def test_capture_target_returns_structured_error_for_invalid_scope(monkeypatch) 
 
     assert result["success"] is False
     assert result["error_code"] == "INVALID_REGION"
+
+
+def test_capture_target_returns_structured_error_for_backend_failure(monkeypatch) -> None:
+    monkeypatch.setattr(targets, "resolve_target", lambda target: _target())
+
+    def fail_capture(rect, backend):
+        raise RuntimeError("backend broke")
+
+    monkeypatch.setattr(service, "capture_region", fail_capture)
+
+    result = service.capture_target({"pid": 2}, backend="fake")
+
+    assert result["success"] is False
+    assert result["error_code"] == "CAPTURE_FAILED"
+    assert result["details"]["backend"] == "fake"
