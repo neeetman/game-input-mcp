@@ -365,6 +365,32 @@ def run_timeline(
 
 
 @mcp.tool()
+def mouse_move_relative(
+    session_id: str,
+    dx: int,
+    dy: int,
+    duration_ms: int = 0,
+    rate_hz: int = 250,
+) -> dict:
+    """Relative mouse motion (camera look) on an input session.
+
+    dx/dy are raw mouse counts (positive dx = right, positive dy = down), spread
+    evenly over duration_ms at rate_hz as integer sub-moves whose sum is exact;
+    duration_ms=0 sends one move. Injected like a physical mouse
+    (MOUSEEVENTF_MOVE, hDevice==NULL), so UECapture records it as action data.
+    Returns steps, first_qpc_ns/last_qpc_ns and the per-batch log.
+    """
+    return _call(
+        "mouse_move_relative",
+        session_id=session_id,
+        dx=dx,
+        dy=dy,
+        duration_ms=duration_ms,
+        rate_hz=rate_hz,
+    )
+
+
+@mcp.tool()
 def abort_timeline(session_id: str) -> dict:
     """Stop the running timeline on a session and release all held input."""
     return _call("abort_timeline", session_id=session_id)

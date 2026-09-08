@@ -183,3 +183,67 @@ def test_run_timeline_on_expired_or_unknown_session(tenv) -> None:
     assert daemon._h_run_timeline({"session_id": sid, "events": [], "total_ms": 100})["error_code"] == "SESSION_EXPIRED"
     assert daemon._h_run_timeline({"session_id": "nope", "events": [], "total_ms": 100})["error_code"] == "SESSION_NOT_FOUND"
     assert daemon._h_abort_timeline({"session_id": "nope"})["error_code"] == "SESSION_NOT_FOUND"
+
+
+def test_mouse_move_relative_runs_a_look_timeline(tenv) -> None:
+    sid = _open(tenv)
+
+    result = daemon._h_mouse_move_relative(
+        {"session_id": sid, "dx": 40, "dy": -10, "duration_ms": 40, "rate_hz": 100}
+    )
+
+    assert result["success"] is True
+    assert result["steps"] == 4 and result["dx"] == 40 and result["dy"] == -10
+    assert result["first_qpc_ns"] == result["last_qpc_ns"] == 123_456_789
+    assert [b["t_ms"] for b in result["batches"]] == [0.0, 10.0, 20.0, 30.0]
+    assert len(tenv.sent) == 4
+    assert daemon._h_session_state({"session_id": sid})["held_keys"] == []
+
+
+def test_mouse_move_relative_single_step_and_bad_params(tenv) -> None:
+    sid = _open(tenv)
+
+    single = daemon._h_mouse_move_relative({"session_id": sid, "dx": 5, "dy": 5})
+    assert single["success"] is True and single["steps"] == 1
+
+    bad = daemon._h_mouse_move_relative({"session_id": sid, "dx": 5, "dy": 5, "rate_hz": 0})
+    assert bad["error_code"] == "INVALID_PARAMS"
+
+
+def test_session_close_aborts_a_running_timeline(tenv, monkeypatch) -> None:
+    sid = _open(tenv)
+    started = threading.Event()
+    release_wait = threading.Event()
+
+    def blocking_wait(abort, seconds):
+        started.set()
+        release_wait.wait(2.0)
+        return abort.is_set()
+
+    monkeypatch.setattr(daemon, "_timeline_wait", blocking_wait)
+    box: dict = {}
+
+    def run():
+        box["r"] = daemon._h_run_timeline(
+            {
+                "session_id": sid,
+                "events": [{"t_ms": 0, "op": "down", "key": "w"}, {"t_ms": 5000, "op": "up", "key": "w"}],
+                "total_ms": 5000,
+            }
+        )
+
+    t = threading.Thread(target=run)
+    t.start()
+    assert started.wait(2.0)
+
+    closer = threading.Thread(target=lambda: box.__setitem__("c", daemon._h_session_close({"session_id": sid})))
+    closer.start()
+    time.sleep(0.05)
+    release_wait.set()
+    t.join(3.0)
+    closer.join(3.0)
+
+    assert box["r"]["error_code"] == "ABORTED"
+    assert box["c"]["success"] is True
+    assert tenv.sent[-1] == [("key", "w", False)]
+    assert daemon._h_session_state({"session_id": sid})["error_code"] == "SESSION_NOT_FOUND"

@@ -132,3 +132,15 @@ def test_timeline_tools_call_daemon_methods(monkeypatch) -> None:
         ("run_timeline", {"session_id": "sid", "events": events, "total_ms": 200, "allow_dangling": False}),
         ("abort_timeline", {"session_id": "sid"}),
     ]
+
+
+def test_mouse_move_relative_tool_calls_daemon(monkeypatch) -> None:
+    calls = []
+    monkeypatch.setattr(server, "_call", lambda method, **params: calls.append((method, params)) or {"success": True})
+
+    assert server.mouse_move_relative("sid", dx=600, dy=-40, duration_ms=800)["success"] is True
+
+    assert calls == [(
+        "mouse_move_relative",
+        {"session_id": "sid", "dx": 600, "dy": -40, "duration_ms": 800, "rate_hz": 250},
+    )]

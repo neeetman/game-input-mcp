@@ -1,7 +1,7 @@
 # Continuous / Multi-Input Control Design
 
 Date: 2026-09-09
-Status: Phases 1-2 implemented 2026-09-09 (sessions, set_keys, watchdog, key table, daemon timelines with QPC stamps and abort); Phases 3-5 pending
+Status: Phases 1-4 implemented 2026-09-09 (sessions, set_keys, watchdog, key table, daemon timelines with QPC stamps and abort, mouse_move_relative, stdlib client + UECapture adapters migrated); Phase 5 (virtual gamepad) optional
 
 ## Summary
 
@@ -312,10 +312,22 @@ second connection proceed concurrently. Client read timeout for these calls is
    coalescing; a fake `SendInput` records QPC and asserts <=1 ms error on the
    real scheduler.
 3. **Relative mouse.** `mouse_move_relative`, profile expansion, `hDevice`
-   note verified against UECapture `InputCapture` on one title.
+   note verified against UECapture `InputCapture` on one title. **Done 2026-09-09**: daemon `mouse_move_relative` = one-op look timeline
+   (steps, first/last qpc_ns); MCP tool; live on Daemon X Machina 600 counts ->
+   about 92 deg yaw either direction.
 4. **Client library + UECapture adapters.** ctypes client, `InputSession`,
    wheel packaging, migrate `GameInputDaemonInput`, `action_window_runner`,
-   L0 tools. Remove `--game-input-root`.
+   L0 tools. Remove `--game-input-root`. **Done 2026-09-09** (except wheel packaging: the
+   package still declares its daemon dependencies; `game_input_mcp.client` is
+   stdlib-only so a source checkout on sys.path suffices, and
+   `--game-input-root` stays as the checkout locator). `client.py` (ctypes
+   pipe, `Client.call/invoke`, `InputSession` with heartbeat thread);
+   UECapture `GameInputDaemonInput` runs on a daemon session (tap/run_timeline
+   daemon-scheduled, release_all closes the session), `execute_event_timeline`
+   schedules the whole window in the daemon while sampling oracles locally, L0
+   tools drive the backend directly, `agent_game_nav` uses the stdlib client.
+   Live on Daemon X Machina through the migrated adapters: 6-batch window max
+   error 0.78 ms, no pywin32 module loaded.
 5. (Optional) **Virtual gamepad** via ViGEmBus for analog sticks.
 
 Each phase is TDD against the existing pytest suite (72 tests today) and ends

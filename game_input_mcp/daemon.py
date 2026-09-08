@@ -371,6 +371,17 @@ def _h_type_text(p: dict) -> dict:
     return ok_response(success=sent, sent=int(sent), text=p["text"], focused=focused)
 
 
+@dataclass
+class _TimelineRun:
+    abort: threading.Event = field(default_factory=threading.Event)
+    done: threading.Event = field(default_factory=threading.Event)
+    released: list[str] = field(default_factory=list)
+
+
+_TIMELINES: dict[str, "_TimelineRun"] = {}
+_TIMELINES_LOCK = threading.Lock()
+
+
 # === Input sessions ===========================================================
 # Daemon-owned held state + lease watchdog. See
 # docs/superpowers/specs/2026-09-09-continuous-control-design.md sections 1-2.
@@ -394,10 +405,24 @@ def _session_view(record: SessionRecord) -> dict:
     }
 
 
+def _abort_running_timeline(session_id: str, wait_s: float = 2.0) -> bool:
+    """Stop a daemon-executed timeline on this session (if any) and wait for
+    its handler to release and return. Used by close/takeover/expiry so a
+    scheduler thread never keeps injecting on a dead session."""
+    with _TIMELINES_LOCK:
+        run = _TIMELINES.get(session_id)
+    if run is None:
+        return False
+    run.abort.set()
+    return run.done.wait(wait_s)
+
+
 def _release_session(record: SessionRecord, reason: str) -> list[str]:
     """Inject up edges for everything the session holds and clear its state.
     Ups go to whatever window is foreground: a stray key-up is harmless, a
     latched key-down is not."""
+    if reason != "aborted" and reason != "focus_lost":
+        _abort_running_timeline(record.session_id)
     edges = plan_release(record)
     released = [edge.name for edge in edges]
     if edges:
@@ -608,17 +633,6 @@ def _timeline_wait(abort: threading.Event, seconds: float) -> bool:
     return abort.wait(seconds)
 
 
-@dataclass
-class _TimelineRun:
-    abort: threading.Event = field(default_factory=threading.Event)
-    done: threading.Event = field(default_factory=threading.Event)
-    released: list[str] = field(default_factory=list)
-
-
-_TIMELINES: dict[str, _TimelineRun] = {}
-_TIMELINES_LOCK = threading.Lock()
-
-
 def _h_run_timeline(p: dict) -> dict:
     record, error = _resolve_session(p)
     if error is not None:
@@ -712,6 +726,35 @@ def _h_run_timeline(p: dict) -> dict:
         run.done.set()
 
 
+def _h_mouse_move_relative(p: dict) -> dict:
+    """Relative mouse motion as a one-op timeline: constant counts/s profile at
+    rate_hz (duration_ms=0 -> a single MOUSEEVENTF_MOVE)."""
+    try:
+        duration_ms = float(p.get("duration_ms", 0) or 0)
+        event = {
+            "t_ms": 0,
+            "op": "look",
+            "dx": int(p.get("dx", 0)),
+            "dy": int(p.get("dy", 0)),
+            "duration_ms": duration_ms,
+            "rate_hz": float(p.get("rate_hz", 250)),
+        }
+    except (TypeError, ValueError) as exc:
+        return error_response("INVALID_PARAMS", str(exc), session_id=p.get("session_id"))
+    result = _h_run_timeline(
+        {"session_id": p.get("session_id"), "events": [event], "total_ms": max(duration_ms, 1.0)}
+    )
+    if result.get("error_code") == "INVALID_TIMELINE":
+        result["error_code"] = "INVALID_PARAMS"
+    batches = result.get("batches") if result.get("success") else None
+    if batches:
+        result["dx"], result["dy"] = event["dx"], event["dy"]
+        result["steps"] = len(batches)
+        result["first_qpc_ns"] = batches[0]["qpc_ns"]
+        result["last_qpc_ns"] = batches[-1]["qpc_ns"]
+    return result
+
+
 def _h_abort_timeline(p: dict) -> dict:
     session_id = p.get("session_id")
     try:
@@ -750,6 +793,7 @@ HANDLERS = {
     "set_keys": _h_set_keys,
     "run_timeline": _h_run_timeline,
     "abort_timeline": _h_abort_timeline,
+    "mouse_move_relative": _h_mouse_move_relative,
 }
 
 

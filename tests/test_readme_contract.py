@@ -33,3 +33,9 @@ def test_readme_documents_timelines() -> None:
     assert "run_timeline" in README
     assert "abort_timeline" in README
     assert "qpc_ns" in README
+
+
+def test_readme_documents_relative_mouse_and_client_library() -> None:
+    assert "mouse_move_relative" in README
+    assert "game_input_mcp.client" in README
+    assert "InputError" in README

@@ -30,6 +30,8 @@ elevated Win32 `SendInput` daemon.
   `input_session_close(session_id)`.
 - `run_timeline(session_id, events, total_ms, allow_dangling?)` - daemon-executed
   scheduled edges with per-batch `qpc_ns`; `abort_timeline(session_id)`.
+- `mouse_move_relative(session_id, dx, dy, duration_ms?, rate_hz?)` - relative
+  mouse motion (camera look) with a constant counts/s profile.
 
 ## Capture-To-Click Flow
 
@@ -160,6 +162,36 @@ run_timeline(session_id, total_ms=2500, events=[
   connection stops it (`ABORTED`); losing foreground stops it (`FOCUS_LOST`).
   Both release everything the session holds and report the partial batch log
   plus `pending_indices`.
+
+## Relative Mouse (camera look)
+
+`mouse_move_relative(session_id, dx=600, dy=0, duration_ms=800, rate_hz=250)`
+spreads 600 counts to the right over 0.8 s as 200 integer sub-moves whose sum is
+exactly 600. The events are `MOUSEEVENTF_MOVE` with `hDevice == NULL`, the same
+path a physical mouse and UECapture's `CameraDrive` use, so the game's
+sensitivity, smoothing and pitch clamps apply and the injected motion is
+recorded as part of the action stream. `duration_ms=0` sends one move.
+
+## Client Library (stdlib-only)
+
+`game_input_mcp.client` talks to the daemon over the same named pipe using only
+`ctypes`, so scripts need neither pywin32 nor the MCP server:
+
+```python
+from game_input_mcp.client import Client, InputError
+
+with Client().session({"pid": pid}, lease_ms=2000) as s:   # heartbeat thread inside
+    s.hold("w")
+    s.run_timeline([...], total_ms=2000)
+    s.look(dx=600, dy=0, duration_ms=800)
+    s.tap("space", hold_ms=120)
+# leaving the block closes the session -> everything released, even on exceptions
+```
+
+Structured daemon errors raise `InputError` with `.code` (`FOCUS_LOST`,
+`SESSION_EXPIRED`, `INVALID_TIMELINE`, ...) and `.details`. `Client.call` is
+the raw pass-through used by older tools; `Client.invoke` raises on
+`success: false`.
 
 ## Install
 
