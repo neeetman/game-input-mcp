@@ -337,6 +337,39 @@ def set_keys(
     )
 
 
+@mcp.tool()
+def run_timeline(
+    session_id: str,
+    events: list[dict[str, Any]],
+    total_ms: int,
+    allow_dangling: bool = False,
+) -> dict:
+    """Execute a scheduled multi-key timeline inside the daemon and block until it ends.
+
+    events: [{"t_ms": 0, "op": "down", "key": "w"}, {"t_ms": 800, "op": "up", "key": "w"},
+             {"t_ms": 100, "op": "button_down", "button": "left"},
+             {"t_ms": 200, "op": "look", "dx": 600, "dy": 0, "duration_ms": 500, "rate_hz": 250},
+             {"t_ms": 300, "op": "wheel", "delta": -120}, ...]
+    Edges at the same t_ms are injected as one SendInput batch (ups first); each
+    batch returns actual_ms and qpc_ns. Validation fails closed: every down needs a
+    matching up inside total_ms unless allow_dangling=true, total_ms <= max_hold_ms.
+    Abort or focus loss stops the run and releases everything the session holds.
+    """
+    return _call(
+        "run_timeline",
+        session_id=session_id,
+        events=events,
+        total_ms=total_ms,
+        allow_dangling=allow_dangling,
+    )
+
+
+@mcp.tool()
+def abort_timeline(session_id: str) -> dict:
+    """Stop the running timeline on a session and release all held input."""
+    return _call("abort_timeline", session_id=session_id)
+
+
 def main() -> None:
     """Entry point for `game-input-mcp` console script."""
     mcp.run()

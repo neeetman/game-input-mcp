@@ -58,6 +58,10 @@ class SessionRecord:
     held_buttons: dict[str, HeldEntry] = field(default_factory=dict)
     status: str = "active"  # active | paused | expired | closed
     reason: str | None = None
+    # While a daemon-executed timeline owns the session the client is blocked
+    # in that call and cannot heartbeat; the lease check is suspended until
+    # this deadline (max_hold_ms still applies).
+    busy_until: float | None = None
 
     @property
     def live(self) -> bool:
@@ -74,6 +78,9 @@ class Edge:
     down: bool
     stroke: KeyStroke | None = None
     button: ButtonSpec | None = None
+    dx: int = 0      # kind == "move"
+    dy: int = 0
+    delta: int = 0   # kind == "wheel"
 
 
 class SessionRegistry:
@@ -180,7 +187,8 @@ class SessionRegistry:
                 if not record.live:
                     continue
                 reason = None
-                if (now - record.last_heartbeat) * 1000.0 > record.lease_ms:
+                busy = record.busy_until is not None and now < record.busy_until
+                if not busy and (now - record.last_heartbeat) * 1000.0 > record.lease_ms:
                     reason = "lease_expired"
                 else:
                     for entry in list(record.held_keys.values()) + list(record.held_buttons.values()):
@@ -281,6 +289,8 @@ def plan_release(record: SessionRecord) -> list[Edge]:
 
 def apply_edges(record: SessionRecord, edges: Sequence[Edge], now: float) -> None:
     for edge in edges:
+        if edge.kind not in ("key", "button"):
+            continue
         table = record.held_keys if edge.kind == "key" else record.held_buttons
         if edge.down:
             table[edge.name] = HeldEntry(stroke=edge.stroke or edge.button, since=now)

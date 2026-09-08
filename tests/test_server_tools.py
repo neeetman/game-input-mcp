@@ -118,3 +118,17 @@ def test_session_tools_call_daemon_methods(monkeypatch) -> None:
         ("session_state", {"session_id": "sid"}),
         ("session_close", {"session_id": "sid"}),
     ]
+
+
+def test_timeline_tools_call_daemon_methods(monkeypatch) -> None:
+    calls = []
+    monkeypatch.setattr(server, "_call", lambda method, **params: calls.append((method, params)) or {"success": True})
+    events = [{"t_ms": 0, "op": "down", "key": "w"}, {"t_ms": 100, "op": "up", "key": "w"}]
+
+    assert server.run_timeline("sid", events, total_ms=200)["success"] is True
+    assert server.abort_timeline("sid")["success"] is True
+
+    assert calls == [
+        ("run_timeline", {"session_id": "sid", "events": events, "total_ms": 200, "allow_dangling": False}),
+        ("abort_timeline", {"session_id": "sid"}),
+    ]

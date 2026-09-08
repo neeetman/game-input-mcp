@@ -1,7 +1,7 @@
 # Continuous / Multi-Input Control Design
 
 Date: 2026-09-09
-Status: Phase 1 implemented 2026-09-09 (sessions, set_keys, watchdog, key table); Phases 2-5 pending
+Status: Phases 1-2 implemented 2026-09-09 (sessions, set_keys, watchdog, key table, daemon timelines with QPC stamps and abort); Phases 3-5 pending
 
 ## Summary
 
@@ -302,7 +302,13 @@ second connection proceed concurrently. Client read timeout for these calls is
    Tests: registry lease expiry, release-on-expiry, focus-lost release,
    atomic batch ordering (ups before downs), key table coverage.
 2. **Timeline + timestamps + abort.** Scheduler thread, coalescing, `look`
-   expansion, validation, partial logs. Tests: pure-logic expansion and
+   expansion, validation, partial logs. **Done 2026-09-09**: `input/timeline.py`,
+   daemon `run_timeline`/`abort_timeline`, `win32.build_inputs` (move/wheel),
+   session `busy_until` lease exemption; 171 tests. Live on Daemon X Machina
+   (third person, in-game): 202 batches over 2 s, timing error max 0.74 ms /
+   mean 0.26 ms, yaw +92 deg from a 600-count look, W+jump moved the pawn,
+   abort of a 5 s hold landed in 1.4 ms and released W. The standalone
+   `mouse_move_relative` tool (Phase 3) is now a thin wrapper over the `look` op. Tests: pure-logic expansion and
    coalescing; a fake `SendInput` records QPC and asserts <=1 ms error on the
    real scheduler.
 3. **Relative mouse.** `mouse_move_relative`, profile expansion, `hDevice`

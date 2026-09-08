@@ -22,6 +22,9 @@ game-input-mcp = "game_input_mcp.server:main"
 game-input-daemon = "game_input_mcp.daemon:main"
 game-input-install = "game_input_mcp.install:main"
 
+[tool.pytest.ini_options]
+markers = ["slow: real-clock timing tests"]
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"

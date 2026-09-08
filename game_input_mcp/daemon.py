@@ -13,7 +13,9 @@ from __future__ import annotations
 import logging
 import os
 import sys
+import threading
 import time
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import win32security
@@ -22,6 +24,7 @@ from . import ipc, targets, win32
 from .capture import service as capture_service
 from .frames import FrameCache
 from .input import keys
+from .input.timeline import TimelineRunner, compile_timeline
 from .input.state import (
     Edge,
     SessionExists,
@@ -593,6 +596,137 @@ def _h_set_keys(p: dict) -> dict:
     )
 
 
+# === Timelines ================================================================
+# Daemon-executed scheduled edges; see the design spec section 3. The wait and
+# clock are module attributes so tests can substitute a fake clock.
+
+_timeline_clock = time.perf_counter
+_timeline_spin_margin_s = 0.002
+
+
+def _timeline_wait(abort: threading.Event, seconds: float) -> bool:
+    return abort.wait(seconds)
+
+
+@dataclass
+class _TimelineRun:
+    abort: threading.Event = field(default_factory=threading.Event)
+    done: threading.Event = field(default_factory=threading.Event)
+    released: list[str] = field(default_factory=list)
+
+
+_TIMELINES: dict[str, _TimelineRun] = {}
+_TIMELINES_LOCK = threading.Lock()
+
+
+def _h_run_timeline(p: dict) -> dict:
+    record, error = _resolve_session(p)
+    if error is not None:
+        return error
+    try:
+        total_ms = float(p.get("total_ms", 0))
+        batches = compile_timeline(
+            record,
+            list(p.get("events") or []),
+            total_ms=total_ms,
+            allow_dangling=bool(p.get("allow_dangling", False)),
+        )
+    except (TypeError, ValueError, KeyError) as exc:
+        return error_response("INVALID_TIMELINE", str(exc), session_id=record.session_id)
+
+    run = _TimelineRun()
+    with _TIMELINES_LOCK:
+        if record.session_id in _TIMELINES:
+            return error_response(
+                "TIMELINE_RUNNING",
+                "A timeline is already running on this session",
+                retryable=True,
+                session_id=record.session_id,
+            )
+        _TIMELINES[record.session_id] = run
+    try:
+        error = _ensure_foreground(record)
+        if error is not None:
+            return error
+        record.busy_until = SESSIONS.now() + total_ms / 1000.0 + 1.0
+
+        def on_batch(batch, edges) -> None:
+            now = SESSIONS.now()
+            apply_edges(record, edges, now=now)
+            record.last_heartbeat = now
+
+        foreground_ok = None
+        if record.focus_policy != "acquire_each":
+            foreground_ok = lambda: win32.get_foreground_hwnd() == record.hwnd  # noqa: E731
+
+        runner = TimelineRunner(
+            send=win32.send_edges,
+            clock=_timeline_clock,
+            wait=_timeline_wait,
+            qpc_ns=win32.qpc_ns,
+            foreground_ok=foreground_ok,
+            spin_margin_s=_timeline_spin_margin_s,
+        )
+        with runner.precise_timing():
+            result = runner.run(batches, total_ms, run.abort, on_batch=on_batch)
+        record.busy_until = None
+        record.last_heartbeat = SESSIONS.now()
+
+        released: list[str] = []
+        if result.stopped_reason != "completed":
+            released = _release_session(record, result.stopped_reason)
+            run.released = released
+            if result.stopped_reason == "focus_lost":
+                record.status = "paused"
+                record.reason = "focus_lost"
+
+        payload = {
+            "session_id": record.session_id,
+            "stopped_reason": result.stopped_reason,
+            "started_qpc_ns": result.started_qpc_ns,
+            "ended_ms": round(result.ended_ms, 3),
+            "total_ms": total_ms,
+            "batches": [b.to_dict() for b in result.batches],
+            "pending_indices": result.pending_indices,
+            "released_on_exit": released,
+            "held_keys": sorted(record.held_keys),
+            "held_buttons": sorted(record.held_buttons),
+        }
+        if result.stopped_reason == "completed":
+            return ok_response(
+                success=all(b.sent == b.expected for b in result.batches),
+                **payload,
+            )
+        if result.stopped_reason == "aborted":
+            return error_response("ABORTED", "Timeline aborted; held input was released", **payload)
+        return error_response(
+            "FOCUS_LOST",
+            "Target window lost foreground during the timeline; held input was released",
+            retryable=True,
+            **payload,
+        )
+    finally:
+        record.busy_until = None
+        with _TIMELINES_LOCK:
+            _TIMELINES.pop(record.session_id, None)
+        run.done.set()
+
+
+def _h_abort_timeline(p: dict) -> dict:
+    session_id = p.get("session_id")
+    try:
+        record = SESSIONS.get(str(session_id))
+    except SessionNotFound:
+        return error_response("SESSION_NOT_FOUND", "Input session was not found", session_id=session_id)
+    with _TIMELINES_LOCK:
+        run = _TIMELINES.get(record.session_id)
+    if run is None:
+        return error_response("NO_TIMELINE", "No timeline is running on this session", session_id=record.session_id)
+    run.abort.set()
+    finished = run.done.wait(2.0)
+    return ok_response(session_id=record.session_id, aborted=finished, released=list(run.released))
+
+
 HANDLERS = {
     "list_targets": _h_list_targets,
     "get_target_info": _h_get_target_info,
@@ -614,6 +748,8 @@ HANDLERS = {
     "session_heartbeat": _h_session_heartbeat,
     "session_state": _h_session_state,
     "set_keys": _h_set_keys,
+    "run_timeline": _h_run_timeline,
+    "abort_timeline": _h_abort_timeline,
 }
 
 

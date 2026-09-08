@@ -28,6 +28,8 @@ elevated Win32 `SendInput` daemon.
   multi-key state change in one `SendInput` batch.
 - `input_session_heartbeat(session_id)` / `input_session_state(session_id)` /
   `input_session_close(session_id)`.
+- `run_timeline(session_id, events, total_ms, allow_dangling?)` - daemon-executed
+  scheduled edges with per-batch `qpc_ns`; `abort_timeline(session_id)`.
 
 ## Capture-To-Click Flow
 
@@ -128,6 +130,36 @@ Scan-code names cover the whole US layout (`e`, `1`, `-`, `numpad5`,
 `MapVirtualKey`. Mouse buttons `left/right/middle/x1/x2` are holdable state.
 Button edges are injected at the current cursor position (no implicit move),
 and injected key-downs do not auto-repeat the way a physical keyboard does.
+
+## Timelines
+
+`run_timeline` moves timing into the daemon: the events below hold W for 2 s,
+overlap a 1 s yaw look and a 120 ms jump, and return one record per injected
+batch with `actual_ms` and `qpc_ns`.
+
+```python
+run_timeline(session_id, total_ms=2500, events=[
+    {"t_ms": 0,    "op": "down", "key": "w"},
+    {"t_ms": 300,  "op": "look", "dx": 800, "dy": 0, "duration_ms": 1000, "rate_hz": 250},
+    {"t_ms": 500,  "op": "down", "key": "space"},
+    {"t_ms": 620,  "op": "up",   "key": "space"},
+    {"t_ms": 2000, "op": "up",   "key": "w"},
+])
+```
+
+- Ops: `down`/`up` (`key`, optional `mode`), `button_down`/`button_up`
+  (`button`), `look` (`dx`, `dy`, `duration_ms`, `rate_hz`; relative mouse
+  counts spread evenly, integer sum exact), `wheel` (`delta`).
+- Equal `t_ms` values become one `SendInput` batch, ups before downs. The
+  scheduler runs at 1 ms timer resolution with a spin-wait for the last 2 ms.
+- Validation fails closed before any edge is sent: unknown keys, `t_ms`
+  outside `[0, total_ms]`, `total_ms` above the session `max_hold_ms`, an
+  `up` for something not down, a `down` for something already down, and any
+  key still down at the end unless `allow_dangling=true`.
+- The request blocks until `total_ms` elapses. `abort_timeline` from another
+  connection stops it (`ABORTED`); losing foreground stops it (`FOCUS_LOST`).
+  Both release everything the session holds and report the partial batch log
+  plus `pending_indices`.
 
 ## Install
 

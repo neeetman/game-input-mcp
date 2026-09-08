@@ -622,18 +622,36 @@ def _button_input(spec, down: bool) -> INPUT:
     )))
 
 
-def send_edges(edges) -> int:
-    """Inject a mixed keyboard/mouse-button edge list as ONE SendInput call so
-    the target sees every edge in the same input burst. Returns the number of
-    events the OS accepted. `edges` are game_input_mcp.input.state.Edge."""
+def build_inputs(edges) -> list[INPUT]:
+    """INPUT records for a mixed edge list (game_input_mcp.input.state.Edge):
+    key and button edges, relative mouse moves and wheel notches."""
     inputs: list[INPUT] = []
     for edge in edges:
         if edge.kind == "key":
             inputs.append(_keystroke_input(edge.stroke, key_up=not edge.down))
         elif edge.kind == "button":
             inputs.append(_button_input(edge.button, edge.down))
+        elif edge.kind == "move":
+            inputs.append(INPUT(type=INPUT_MOUSE, u=_INPUTunion(mi=MOUSEINPUT(
+                dx=int(edge.dx), dy=int(edge.dy), mouseData=0,
+                dwFlags=MOUSEEVENTF_MOVE,   # relative counts, like a physical mouse
+                time=0, dwExtraInfo=None
+            ))))
+        elif edge.kind == "wheel":
+            inputs.append(INPUT(type=INPUT_MOUSE, u=_INPUTunion(mi=MOUSEINPUT(
+                dx=0, dy=0, mouseData=int(edge.delta) & 0xFFFFFFFF,
+                dwFlags=MOUSEEVENTF_WHEEL,
+                time=0, dwExtraInfo=None
+            ))))
         else:
             raise ValueError(f"unknown edge kind: {edge.kind}")
+    return inputs
+
+
+def send_edges(edges) -> int:
+    """Inject a mixed edge list as ONE SendInput call so the target sees every
+    edge in the same input burst. Returns the number of events the OS accepted."""
+    inputs = build_inputs(edges)
     if not inputs:
         return 0
     return _send_inputs(inputs)

@@ -27,3 +27,9 @@ def test_readme_documents_input_sessions() -> None:
     assert "input_session_open" in README
     assert "set_keys" in README
     assert "lease" in README
+
+
+def test_readme_documents_timelines() -> None:
+    assert "run_timeline" in README
+    assert "abort_timeline" in README
+    assert "qpc_ns" in README

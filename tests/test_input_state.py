@@ -254,3 +254,27 @@ def test_watchdog_survives_callback_errors() -> None:
     watchdog.run_once()  # must not raise
 
     assert sorted(seen) == [1, 2]
+
+
+def test_sweep_skips_lease_check_while_a_timeline_is_busy() -> None:
+    clock = Clock()
+    registry = SessionRegistry(clock=clock)
+    record = _open(registry, lease_ms=1000, max_hold_ms=5000)
+    record.busy_until = clock.now + 3.0
+
+    clock.now += 2.0
+    assert registry.sweep() == []  # lease would have expired, but a timeline owns the session
+
+    clock.now += 1.5
+    assert registry.sweep() == [(record, "lease_expired")]
+
+
+def test_sweep_still_enforces_max_hold_while_busy() -> None:
+    clock = Clock()
+    registry = SessionRegistry(clock=clock)
+    record = _open(registry, lease_ms=1000, max_hold_ms=500)
+    record.busy_until = clock.now + 10.0
+    record.held_keys["w"] = state.HeldEntry(stroke=None, since=clock.now)
+
+    clock.now += 0.6
+    assert registry.sweep() == [(record, "max_hold_exceeded")]
