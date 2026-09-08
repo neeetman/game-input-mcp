@@ -263,6 +263,80 @@ def type_text(target: dict[str, Any], text: str, activate: bool = True) -> dict:
     return _call("type_text", target=target, text=text, activate=activate)
 
 
+# --- Input sessions (daemon-owned held state + lease watchdog) ---------------
+
+@mcp.tool()
+def input_session_open(
+    target: dict[str, Any],
+    lease_ms: int = 2000,
+    focus: Literal["acquire_once", "acquire_each", "none"] = "acquire_once",
+    max_hold_ms: int = 30000,
+    takeover: bool = False,
+) -> dict:
+    """Open an input session on a game window for continuous control.
+
+    The daemon tracks every key/button the session holds and releases all of
+    them when the lease expires without a heartbeat, when a key is held longer
+    than max_hold_ms, when the target loses foreground (acquire_once/none), or
+    when the session is closed. focus="acquire_once" focuses the window now
+    and never re-focuses (no Alt self-press leaking mid-hold); later sends fail
+    closed with FOCUS_LOST if the window is not foreground.
+    """
+    return _call(
+        "session_open",
+        target=target,
+        lease_ms=lease_ms,
+        focus=focus,
+        max_hold_ms=max_hold_ms,
+        takeover=takeover,
+    )
+
+
+@mcp.tool()
+def input_session_close(session_id: str) -> dict:
+    """Close a session and release everything it still holds."""
+    return _call("session_close", session_id=session_id)
+
+
+@mcp.tool()
+def input_session_heartbeat(session_id: str, lease_ms: int | None = None) -> dict:
+    """Extend a session lease (optionally changing lease_ms)."""
+    return _call("session_heartbeat", session_id=session_id, lease_ms=lease_ms)
+
+
+@mcp.tool()
+def input_session_state(session_id: str) -> dict:
+    """Return held keys/buttons, status, age and foreground state of a session."""
+    return _call("session_state", session_id=session_id)
+
+
+@mcp.tool()
+def set_keys(
+    session_id: str,
+    down: list[str] | None = None,
+    up: list[str] | None = None,
+    buttons_down: list[str] | None = None,
+    buttons_up: list[str] | None = None,
+    mode: Literal["scancode", "vk"] = "scancode",
+) -> dict:
+    """Atomically change held key/mouse-button state in one SendInput batch.
+
+    Ups are injected before downs. Keys already in the requested state are
+    skipped. Any scan-code name (letters, digits, punctuation, numpad, lshift/
+    rctrl/..., arrows, f1-f12) and buttons left/right/middle/x1/x2 are valid.
+    Returns qpc_ns of the injection for alignment with recorded input.
+    """
+    return _call(
+        "set_keys",
+        session_id=session_id,
+        down=down,
+        up=up,
+        buttons_down=buttons_down,
+        buttons_up=buttons_up,
+        mode=mode,
+    )
+
+
 def main() -> None:
     """Entry point for `game-input-mcp` console script."""
     mcp.run()

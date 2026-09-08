@@ -21,12 +21,25 @@ import win32security
 from . import ipc, targets, win32
 from .capture import service as capture_service
 from .frames import FrameCache
+from .input import keys
+from .input.state import (
+    Edge,
+    SessionExists,
+    SessionNotFound,
+    SessionRecord,
+    SessionRegistry,
+    Watchdog,
+    apply_edges,
+    plan_release,
+    plan_state_change,
+)
 from .geometry import FrameGeometry, point_to_screen
 from .models import Rect, TargetInfo, error_response, ok_response
 
 log = logging.getLogger("game-input-daemon")
 
 FRAME_CACHE = FrameCache()
+SESSIONS = SessionRegistry()
 
 
 # === Handlers ===============================================================
@@ -326,18 +339,22 @@ def _h_hotkey(p: dict) -> dict:
     focused, error = _focus_if_requested(_target_param(p), p.get("activate", True))
     if error is not None:
         return error
-    keys = p["keys"]
+    names = p["keys"]
     mode = p.get("mode", "vk")
-    sent = 0
-    for key in keys:
-        sent += win32.send_key_down(key, mode)
-    for key in reversed(keys):
-        sent += win32.send_key_up(key, mode)
-    expected = len(keys) * 2
+    strokes = [keys.resolve_key(key, mode) for key in names]
+    downs = [Edge("key", key, True, stroke=stroke) for key, stroke in zip(names, strokes)]
+    ups = [
+        Edge("key", key, False, stroke=stroke)
+        for key, stroke in reversed(list(zip(names, strokes)))
+    ]
+    # Two batches: the chord is pressed together and released together.
+    sent = win32.send_edges(downs)
+    sent += win32.send_edges(ups)
+    expected = len(names) * 2
     return ok_response(
         success=sent == expected,
         sent=sent,
-        keys=keys,
+        keys=names,
         mode=mode,
         focused=focused,
     )
@@ -349,6 +366,231 @@ def _h_type_text(p: dict) -> dict:
         return error
     sent = bool(win32.send_keys(p["text"]))
     return ok_response(success=sent, sent=int(sent), text=p["text"], focused=focused)
+
+
+# === Input sessions ===========================================================
+# Daemon-owned held state + lease watchdog. See
+# docs/superpowers/specs/2026-09-09-continuous-control-design.md sections 1-2.
+
+def _session_view(record: SessionRecord) -> dict:
+    now = SESSIONS.now()
+    return {
+        "session_id": record.session_id,
+        "hwnd": record.hwnd,
+        "pid": record.pid,
+        "status": record.status,
+        "reason": record.reason,
+        "focus_policy": record.focus_policy,
+        "lease_ms": record.lease_ms,
+        "max_hold_ms": record.max_hold_ms,
+        "held_keys": sorted(record.held_keys),
+        "held_buttons": sorted(record.held_buttons),
+        "age_ms": int(round((now - record.opened_at) * 1000.0)),
+        "since_heartbeat_ms": int(round((now - record.last_heartbeat) * 1000.0)),
+        "foreground": win32.get_foreground_hwnd() == record.hwnd,
+    }
+
+
+def _release_session(record: SessionRecord, reason: str) -> list[str]:
+    """Inject up edges for everything the session holds and clear its state.
+    Ups go to whatever window is foreground: a stray key-up is harmless, a
+    latched key-down is not."""
+    edges = plan_release(record)
+    released = [edge.name for edge in edges]
+    if edges:
+        try:
+            sent = win32.send_edges(edges)
+            if sent != len(edges):
+                log.warning(
+                    "session %s release(%s): sent %d/%d",
+                    record.session_id, reason, sent, len(edges),
+                )
+        finally:
+            record.held_keys.clear()
+            record.held_buttons.clear()
+    if released:
+        log.info("session %s released %s (%s)", record.session_id, released, reason)
+    return released
+
+
+def _release_all_sessions(reason: str) -> dict[str, list[str]]:
+    out: dict[str, list[str]] = {}
+    for record in SESSIONS.expire_all(reason):
+        try:
+            out[record.session_id] = _release_session(record, reason)
+        except Exception:  # noqa: BLE001
+            log.exception("release failed for session %s", record.session_id)
+    return out
+
+
+def _watchdog_sweep() -> int:
+    return Watchdog(SESSIONS, on_expire=_release_session).run_once()
+
+
+def _resolve_session(p: dict) -> tuple[SessionRecord | None, dict | None]:
+    session_id = p.get("session_id")
+    try:
+        record = SESSIONS.get(str(session_id))
+    except SessionNotFound:
+        return None, error_response(
+            "SESSION_NOT_FOUND",
+            "Input session was not found",
+            session_id=session_id,
+        )
+    if not record.live:
+        return None, error_response(
+            "SESSION_EXPIRED",
+            f"Input session is {record.status}",
+            session_id=record.session_id,
+            reason=record.reason,
+            status=record.status,
+        )
+    return record, None
+
+
+def _ensure_foreground(record: SessionRecord) -> dict | None:
+    """Apply the session focus policy before an injection. acquire_each
+    re-focuses (v1 behaviour); the other policies only verify and fail closed,
+    releasing everything held when the target lost the foreground."""
+    if record.focus_policy == "acquire_each":
+        if not win32.focus_window_detailed(record.pid).get("success"):
+            return error_response(
+                "FOCUS_FAILED",
+                "Target window could not be focused",
+                retryable=True,
+                session_id=record.session_id,
+            )
+        return None
+    foreground = win32.get_foreground_hwnd()
+    if foreground != record.hwnd:
+        released = _release_session(record, "focus_lost")
+        record.status = "paused"
+        record.reason = "focus_lost"
+        return error_response(
+            "FOCUS_LOST",
+            "Target window is not foreground; held input was released",
+            retryable=True,
+            session_id=record.session_id,
+            foreground_hwnd=foreground,
+            released=released,
+        )
+    if record.status == "paused":
+        record.status = "active"
+        record.reason = None
+    return None
+
+
+def _h_session_open(p: dict) -> dict:
+    target, error = _resolve_target(p)
+    if error is not None:
+        return error
+    focus_policy = str(p.get("focus", "acquire_once"))
+    try:
+        record, replaced = SESSIONS.open(
+            hwnd=target.hwnd,
+            pid=target.pid,
+            focus_policy=focus_policy,
+            lease_ms=int(p.get("lease_ms", 2000)),
+            max_hold_ms=int(p.get("max_hold_ms", 30000)),
+            takeover=bool(p.get("takeover", False)),
+        )
+    except SessionExists as exc:
+        return error_response(
+            "SESSION_EXISTS",
+            "Another live session already owns this window; pass takeover=true",
+            session_id=exc.existing.session_id,
+            hwnd=exc.existing.hwnd,
+        )
+    except (TypeError, ValueError) as exc:
+        return error_response("INVALID_PARAMS", str(exc))
+    replaced_released: list[str] = []
+    if replaced is not None:
+        replaced_released = _release_session(replaced, "takeover")
+    if focus_policy in ("acquire_once", "acquire_each"):
+        focus = win32.focus_window_detailed(record.pid)
+        if not focus.get("success"):
+            SESSIONS.close(record.session_id)
+            return error_response(
+                "FOCUS_FAILED",
+                "Target window could not be focused",
+                retryable=True,
+                target=target.to_dict(),
+                focus=focus,
+            )
+    view = _session_view(record)
+    view["target"] = target.to_dict()
+    view["replaced_session_id"] = replaced.session_id if replaced is not None else None
+    view["replaced_released"] = replaced_released
+    return ok_response(**view)
+
+
+def _h_session_close(p: dict) -> dict:
+    try:
+        record = SESSIONS.close(str(p.get("session_id")))
+    except SessionNotFound:
+        return error_response(
+            "SESSION_NOT_FOUND", "Input session was not found", session_id=p.get("session_id")
+        )
+    released = _release_session(record, "closed")
+    return ok_response(session_id=record.session_id, released=released)
+
+
+def _h_session_heartbeat(p: dict) -> dict:
+    record, error = _resolve_session(p)
+    if error is not None:
+        return error
+    try:
+        SESSIONS.heartbeat(record.session_id, p.get("lease_ms"))
+    except (TypeError, ValueError) as exc:
+        return error_response("INVALID_PARAMS", str(exc))
+    return ok_response(session_id=record.session_id, lease_ms=record.lease_ms)
+
+
+def _h_session_state(p: dict) -> dict:
+    session_id = p.get("session_id")
+    try:
+        record = SESSIONS.get(str(session_id))
+    except SessionNotFound:
+        return error_response("SESSION_NOT_FOUND", "Input session was not found", session_id=session_id)
+    return ok_response(**_session_view(record))
+
+
+def _h_set_keys(p: dict) -> dict:
+    record, error = _resolve_session(p)
+    if error is not None:
+        return error
+    try:
+        edges, skipped = plan_state_change(
+            record,
+            down=p.get("down"),
+            up=p.get("up"),
+            buttons_down=p.get("buttons_down"),
+            buttons_up=p.get("buttons_up"),
+            mode=str(p.get("mode", "scancode")),
+        )
+    except ValueError as exc:
+        return error_response("INVALID_KEY", str(exc), session_id=record.session_id)
+    error = _ensure_foreground(record)
+    if error is not None:
+        return error
+    sent = 0
+    qpc = win32.qpc_ns()
+    if edges:
+        sent = win32.send_edges(edges)
+        qpc = win32.qpc_ns()
+        # Track even a partial send: the release path must cover anything the
+        # OS may have accepted.
+        apply_edges(record, edges, now=SESSIONS.now())
+    return ok_response(
+        success=sent == len(edges),
+        session_id=record.session_id,
+        sent=sent,
+        expected=len(edges),
+        skipped=skipped,
+        qpc_ns=qpc,
+        held_keys=sorted(record.held_keys),
+        held_buttons=sorted(record.held_buttons),
+    )
 
 
 HANDLERS = {
@@ -367,6 +609,11 @@ HANDLERS = {
     "tap_key": _h_tap_key,
     "hotkey": _h_hotkey,
     "type_text": _h_type_text,
+    "session_open": _h_session_open,
+    "session_close": _h_session_close,
+    "session_heartbeat": _h_session_heartbeat,
+    "session_state": _h_session_state,
+    "set_keys": _h_set_keys,
 }
 
 
@@ -431,6 +678,9 @@ def main() -> int:
     for name, handler in HANDLERS.items():
         server.register(name, handler)
 
+    watchdog = Watchdog(SESSIONS, on_expire=_release_session)
+    watchdog.start()
+
     sa = build_user_scoped_security_attributes()
     try:
         server.serve_forever(sa)
@@ -439,6 +689,11 @@ def main() -> int:
     except Exception:
         log.exception("fatal")
         return 1
+    finally:
+        watchdog.stop()
+        released = _release_all_sessions("daemon_shutdown")
+        if released:
+            log.info("shutdown released %s", released)
     return 0
 
 

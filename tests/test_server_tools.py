@@ -80,3 +80,41 @@ def test_keyboard_tools_call_new_daemon_methods(monkeypatch) -> None:
         ("hotkey", {"target": {"pid": 2}, "keys": ["ctrl", "s"], "mode": "vk", "activate": True}),
         ("type_text", {"target": {"pid": 2}, "text": "hello", "activate": True}),
     ]
+
+
+def test_session_tools_call_daemon_methods(monkeypatch) -> None:
+    calls = []
+    monkeypatch.setattr(server, "_call", lambda method, **params: calls.append((method, params)) or {"success": True})
+
+    assert server.input_session_open({"pid": 2}, lease_ms=3000)["success"] is True
+    assert server.set_keys("sid", down=["w", "a"], up=["s"])["success"] is True
+    assert server.input_session_heartbeat("sid")["success"] is True
+    assert server.input_session_state("sid")["success"] is True
+    assert server.input_session_close("sid")["success"] is True
+
+    assert calls == [
+        (
+            "session_open",
+            {
+                "target": {"pid": 2},
+                "lease_ms": 3000,
+                "focus": "acquire_once",
+                "max_hold_ms": 30000,
+                "takeover": False,
+            },
+        ),
+        (
+            "set_keys",
+            {
+                "session_id": "sid",
+                "down": ["w", "a"],
+                "up": ["s"],
+                "buttons_down": None,
+                "buttons_up": None,
+                "mode": "scancode",
+            },
+        ),
+        ("session_heartbeat", {"session_id": "sid", "lease_ms": None}),
+        ("session_state", {"session_id": "sid"}),
+        ("session_close", {"session_id": "sid"}),
+    ]

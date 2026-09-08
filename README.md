@@ -22,6 +22,12 @@ elevated Win32 `SendInput` daemon.
 - `type_text(target, text)` - foreground text entry helper.
 - `send_keys(pid, keys)` - compatibility text/key sequence helper.
 - `get_window_info(pid)` - compatibility window metadata helper.
+- `input_session_open(target, lease_ms?, focus?, max_hold_ms?, takeover?)` -
+  open a daemon-owned input session for continuous control.
+- `set_keys(session_id, down?, up?, buttons_down?, buttons_up?)` - atomic
+  multi-key state change in one `SendInput` batch.
+- `input_session_heartbeat(session_id)` / `input_session_state(session_id)` /
+  `input_session_close(session_id)`.
 
 ## Capture-To-Click Flow
 
@@ -88,6 +94,40 @@ hotkey({"pid": <game-pid>}, ["ctrl", "s"], mode="vk")
 
 Supported scan-code names include `w`, `a`, `s`, `d`, `space`, `shift`,
 `ctrl`, `alt`, `enter`, `esc`, `tab`, arrow keys, and `f1` through `f12`.
+
+## Input Sessions (continuous control)
+
+One-shot tools re-focus the window on every call, which is wrong for holding
+W for seconds while pulsing other keys. Sessions move the held state into the
+elevated daemon:
+
+```python
+s = input_session_open({"pid": <game-pid>}, lease_ms=2000)
+set_keys(s["session_id"], down=["w"])                      # cruise
+set_keys(s["session_id"], down=["a", "space"], up=["w"])   # one SendInput batch, ups first
+input_session_heartbeat(s["session_id"])                   # keep the lease alive
+input_session_close(s["session_id"])                       # releases everything
+```
+
+Safety contract:
+
+- The daemon knows exactly what each session holds and releases all of it when
+  the **lease** expires without a heartbeat, when any key is held longer than
+  `max_hold_ms`, when the session is closed, when the daemon shuts down, or
+  when the target window loses foreground (`FOCUS_LOST`, session `paused`).
+- `focus="acquire_once"` (default) focuses once at open and never re-focuses,
+  so no Alt self-press leaks into the game mid-hold. `acquire_each` keeps the
+  one-shot behaviour; `none` never focuses and only verifies.
+- A second session on the same window is refused (`SESSION_EXISTS`) unless
+  `takeover=true`, which releases the previous session first.
+- Every response carries `qpc_ns` (injection timestamp) and the resulting
+  `held_keys` / `held_buttons`.
+
+Scan-code names cover the whole US layout (`e`, `1`, `-`, `numpad5`,
+`lshift`, `rctrl`, `home`, ...); unknown names fall back to
+`MapVirtualKey`. Mouse buttons `left/right/middle/x1/x2` are holdable state.
+Button edges are injected at the current cursor position (no implicit move),
+and injected key-downs do not auto-repeat the way a physical keyboard does.
 
 ## Install
 

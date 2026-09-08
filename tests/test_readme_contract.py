@@ -21,3 +21,9 @@ def test_readme_documents_scan_code_keys() -> None:
     assert "key_down" in README
     assert "key_up" in README
     assert "scancode" in README
+
+
+def test_readme_documents_input_sessions() -> None:
+    assert "input_session_open" in README
+    assert "set_keys" in README
+    assert "lease" in README

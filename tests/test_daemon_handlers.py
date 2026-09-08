@@ -355,8 +355,11 @@ def test_hotkey_handler_sends_down_then_up(monkeypatch) -> None:
     sequence: list[str] = []
     monkeypatch.setattr(daemon.targets, "resolve_target", lambda target: _target())
     monkeypatch.setattr(daemon.win32, "focus_window", lambda pid: True)
-    monkeypatch.setattr(daemon.win32, "send_key_down", lambda key, mode="scancode": sequence.append(f"down:{key}") or 1)
-    monkeypatch.setattr(daemon.win32, "send_key_up", lambda key, mode="scancode": sequence.append(f"up:{key}") or 1)
+    def fake_send_edges(edges):
+        sequence.extend(f"{'down' if e.down else 'up'}:{e.name}" for e in edges)
+        return len(edges)
+
+    monkeypatch.setattr(daemon.win32, "send_edges", fake_send_edges)
 
     result = daemon._h_hotkey(
         {"target": {"pid": 2}, "keys": ["ctrl", "c"], "mode": "vk", "activate": True}

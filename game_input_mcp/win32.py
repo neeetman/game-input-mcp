@@ -355,6 +355,19 @@ def focus_window(pid: int) -> bool:
     return bool(focus_window_detailed(pid).get("success"))
 
 
+# === Foreground / timing helpers ===
+
+def get_foreground_hwnd() -> int:
+    """HWND of the current foreground window (0 when none)."""
+    return int(user32.GetForegroundWindow() or 0)
+
+
+def qpc_ns() -> int:
+    """Monotonic high-resolution timestamp in nanoseconds (QueryPerformanceCounter
+    on Windows via time.perf_counter_ns)."""
+    return time.perf_counter_ns()
+
+
 # === Coordinate scope translation ===
 
 def translate_to_screen(
@@ -598,6 +611,32 @@ def _keystroke_input(stroke: KeyStroke, key_up: bool) -> INPUT:
         time=0,
         dwExtraInfo=None
     )))
+
+
+def _button_input(spec, down: bool) -> INPUT:
+    return INPUT(type=INPUT_MOUSE, u=_INPUTunion(mi=MOUSEINPUT(
+        dx=0, dy=0,
+        mouseData=spec.mouse_data,
+        dwFlags=spec.down_flag if down else spec.up_flag,
+        time=0, dwExtraInfo=None
+    )))
+
+
+def send_edges(edges) -> int:
+    """Inject a mixed keyboard/mouse-button edge list as ONE SendInput call so
+    the target sees every edge in the same input burst. Returns the number of
+    events the OS accepted. `edges` are game_input_mcp.input.state.Edge."""
+    inputs: list[INPUT] = []
+    for edge in edges:
+        if edge.kind == "key":
+            inputs.append(_keystroke_input(edge.stroke, key_up=not edge.down))
+        elif edge.kind == "button":
+            inputs.append(_button_input(edge.button, edge.down))
+        else:
+            raise ValueError(f"unknown edge kind: {edge.kind}")
+    if not inputs:
+        return 0
+    return _send_inputs(inputs)
 
 
 def send_key_down(key: str, mode: str = "scancode") -> int:
