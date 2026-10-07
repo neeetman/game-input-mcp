@@ -73,6 +73,8 @@ def test_target_info_to_dict_is_json_friendly() -> None:
         dpi=144,
         is_foreground=True,
         is_minimized=False,
+        exe="game.exe",
+        monitor=1,
     )
 
     assert info.to_dict() == {
@@ -86,4 +88,6 @@ def test_target_info_to_dict_is_json_friendly() -> None:
         "dpi": 144,
         "is_foreground": True,
         "is_minimized": False,
+        "exe": "game.exe",
+        "monitor": 1,
     }

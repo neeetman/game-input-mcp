@@ -71,7 +71,98 @@ MCP response.
 - `mss` as the general Windows screen capture fallback.
 - `pillow` via `ImageGrab` as the final built-in fallback.
 
-`windows_graphics_capture` is not included in this v1.
+`wgc` (Windows.Graphics.Capture) is opt-in: `pip install game-input-mcp[wgc]`,
+then `capture(..., backend="wgc")`. It captures the window itself, so a covered
+or half off-screen window still returns its own pixels. `backend="auto"` keeps
+the order above and escalates to `wgc` only when a screen grab cannot be
+trusted: another window covers the target, part of it is off screen or spans
+monitors, or the first grab came back black. Sessions stay warm for 5 s, so the
+first capture costs ~0.3-1 s and later ones ~0.1 s.
+
+`capture` results may carry `warnings`; read them before trusting the pixels:
+
+| Code | Meaning |
+| --- | --- |
+| `TARGET_OCCLUDED` | another window covers part of the target (`details.by` names it); the pixels are not the game's |
+| `TARGET_OFFSCREEN` | part of the target is off screen |
+| `BLACK_FRAME` | the frame is (almost) black |
+| `WGC_NO_NEW_FRAME` | the window has not redrawn recently; this is its latest frame |
+| `WINDOW_MOVED_DURING_CAPTURE` | capture again before clicking |
+| `FRAME_IDENTICAL_TO_PREVIOUS` | pixel-identical to this window's previous capture (`details.cpu_ms_since_previous`, `cross_check`): nothing changed, or the capture is stalled. When `wgc` produced it, a screen backend is asked as a tie-breaker; if it shows a different picture the stale `wgc` session is discarded and the screen frame is returned (`cross_check: "differs"`); if they agree it is a static scene and no warning is raised |
+| `HDR_COLOR_SHIFT_POSSIBLE` | the display is in HDR mode (or Auto HDR is on and the display state is unknown): captured colours may be brighter and shifted; turn HDR / Auto HDR off for the game while capturing. Never raised on an SDR display |
+
+Errors: `CAPTURE_BACKEND_UNAVAILABLE` (e.g. `wgc` without the package),
+`CAPTURE_TIMEOUT`, `CAPTURE_REGION_UNSUPPORTED`.
+
+Every capture also returns `frame_hash`, `hdr` (`display_hdr`, `auto_hdr`) and
+`timing`: `capture_qpc_ns` (when the frame was handed over) and, for `wgc`,
+`frame_qpc_ns` (when the OS composed it). Both are on the same QPC clock as the
+`qpc_ns` of input edges, so a frame can be placed between two key events.
+
+`capture(..., thumb_width=480)` also writes a small copy of the same frame
+(`thumb_path`, `thumb{width,height,scale}`) that is cheap to look at. It shares the
+`frame_id`; click on it with `scope="normalized"` (fractions of the image) or keep
+using the full image with `scope="capture"`. No thumbnail is written unless it
+would be smaller than the returned image.
+
+## Input Safety
+
+SendInput never reaches a background window: keys go to the foreground window
+and a click lands on whatever is under the pointer. So one-shot tools now fail
+closed, including `activate=False`:
+
+- `TARGET_NOT_FOREGROUND` - the target is not the foreground window (`details`
+  names the window that is). Absolute mouse tools have one exception: with *no*
+  foreground window, a click is allowed if the target is under the destination
+  point (windowed games that drop the foreground on a click); the response then
+  carries `guard.exception`.
+- `FOCUS_FAILED` - `mouse_click`/`mouse_drag`/`scroll` used to send anyway when
+  focusing failed.
+- `FRAME_GEOMETRY_CHANGED` - a `capture`/`normalized` click whose frame was
+  taken before the window moved, resized or changed DPI; capture again.
+- Key releases (`key_up`) are never blocked.
+
+## User Presence
+
+`get_target_info` returns `presence` (`state`, `user_idle_ms`, `threshold_ms`,
+`policy`). The daemon tells the user's input from its own (its `SendInput` also
+moves `GetLastInputInfo`), and applies a daemon-level policy:
+
+| Policy | Changing the foreground | Injecting into the foreground window | Running session / timeline |
+| --- | --- | --- | --- |
+| `off` | allow | allow | allow |
+| `warn` | warning | warning | warning |
+| `focus` (default) | `USER_PRESENT` | warning | warning |
+| `strict` | `USER_PRESENT` | `USER_PRESENT` | pause: `USER_TOOK_OVER` |
+
+Warnings appear as `warnings: [{"code": "USER_PRESENT", ...}]`. Under `strict`
+any real user input releases everything the session holds, stops a running
+timeline (partial log and `pending_indices` returned) and pauses the session; it
+resumes by itself after the user has been idle for `presence_idle_s`. Errors
+carry `retry_after_ms`. Gamepad input is not visible to this signal, and input
+from other injectors counts as the user's.
+
+## Configuration
+
+Settings are read when the daemon starts from
+`%LOCALAPPDATA%\game-input-mcp\config.json`; `GAME_INPUT_<KEY>` environment
+variables override the file. There is deliberately no per-call way to relax a
+guard. Write and apply them with:
+
+```powershell
+python -m game_input_mcp.install --set presence=strict --set presence_idle_s=45
+python -m game_input_mcp.install --restart
+```
+
+| Key | Values | Default |
+| --- | --- | --- |
+| `foreground_guard` | `strict`, `warn`, `off` | `strict` |
+| `frame_geometry_check` | `strict`, `warn`, `off` | `strict` |
+| `presence` | `off`, `warn`, `focus`, `strict` | `focus` |
+| `presence_idle_s` | seconds | `30` |
+| `capture_backend` | `auto`, `dxcam`, `mss`, `pillow`, `wgc` | `auto` |
+| `capture_timeout_ms` | ms | `1500` |
+| `wgc_idle_ttl_s` | seconds | `5` |
 
 ## Coordinate Scopes
 

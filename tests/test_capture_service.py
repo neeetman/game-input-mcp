@@ -27,7 +27,7 @@ def test_capture_target_stores_frame_and_metadata(monkeypatch, tmp_path) -> None
     monkeypatch.setattr(
         service,
         "capture_region",
-        lambda rect, backend: service.CaptureResult(Image.new("RGB", (320, 200), "red"), "fake", "region"),
+        lambda rect, backend, **kwargs: service.CaptureResult(Image.new("RGB", (320, 200), "red"), "fake", "region"),
     )
     cache = FrameCache(tmp_path, ttl_sec=60)
 
@@ -55,7 +55,7 @@ def test_capture_target_builds_frame_geometry(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(
         service,
         "capture_region",
-        lambda rect, backend: service.CaptureResult(Image.new("RGB", (320, 200), "red"), "fake", "region"),
+        lambda rect, backend, **kwargs: service.CaptureResult(Image.new("RGB", (320, 200), "red"), "fake", "region"),
     )
 
     result = service.capture_target({"pid": 2}, backend="fake", cache=FrameCache(tmp_path))

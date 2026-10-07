@@ -75,3 +75,40 @@ def test_cleanup_removes_orphaned_png(tmp_path) -> None:
 
     assert removed == 1
     assert not image_path.exists()
+
+
+def test_thumbnail_is_stored_beside_the_frame_and_survives_cleanup(tmp_path) -> None:
+    cache = FrameCache(tmp_path, ttl_sec=60)
+    record = cache.store(Image.new("RGB", (8, 4), "red"), {"value": 1}, thumb=Image.new("RGB", (4, 2), "red"))
+
+    assert record.thumb_path == tmp_path / f"thumb_{record.frame_id}.png"
+    assert record.thumb_path.exists()
+    assert cache.get(record.frame_id).thumb_path == record.thumb_path
+    assert cache.cleanup() == 0
+    assert record.thumb_path.exists() and record.image_path.exists()
+
+
+def test_frame_without_thumbnail_has_no_thumb_path(tmp_path) -> None:
+    cache = FrameCache(tmp_path, ttl_sec=60)
+    record = cache.store(Image.new("RGB", (2, 2), "red"), {})
+
+    assert record.thumb_path is None and cache.get(record.frame_id).thumb_path is None
+
+
+def test_cleanup_removes_the_thumbnail_with_its_expired_frame(tmp_path) -> None:
+    now = [1000.0]
+    cache = FrameCache(tmp_path, ttl_sec=10, now=lambda: now[0])
+    record = cache.store(Image.new("RGB", (8, 4), "red"), {}, thumb=Image.new("RGB", (4, 2), "red"))
+    now[0] = 1011.0
+
+    assert cache.cleanup() == 3
+    assert not record.thumb_path.exists() and not record.image_path.exists() and not record.metadata_path.exists()
+
+
+def test_cleanup_removes_an_orphaned_thumbnail(tmp_path) -> None:
+    cache = FrameCache(tmp_path, ttl_sec=60)
+    orphan = tmp_path / "thumb_frame_00000000000000000000000000000000.png"
+    orphan.write_bytes(b"not a real image")
+
+    assert cache.cleanup() == 1
+    assert not orphan.exists()

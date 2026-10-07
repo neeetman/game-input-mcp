@@ -6,6 +6,7 @@ SendInput consumes — no implicit virtual-pixel scaling surprises.
 """
 from __future__ import annotations
 
+import contextlib
 import ctypes
 from ctypes import wintypes
 from dataclasses import dataclass
@@ -112,6 +113,136 @@ class WindowInfo:
     dpi: int                                # GetDpiForWindow
     is_foreground: bool
     is_minimized: bool = False
+    exe: str | None = None                  # basename of the owning process image
+    monitor: int | None = None              # index into get_monitor_rects() order
+
+
+# Prototypes for the calls whose handle/struct arguments must not be truncated.
+user32.WindowFromPoint.argtypes = [wintypes.POINT]
+user32.WindowFromPoint.restype = wintypes.HWND
+user32.GetAncestor.argtypes = [wintypes.HWND, wintypes.UINT]
+user32.GetAncestor.restype = wintypes.HWND
+user32.MonitorFromWindow.argtypes = [wintypes.HWND, wintypes.DWORD]
+user32.MonitorFromWindow.restype = ctypes.c_void_p
+kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+kernel32.OpenProcess.restype = wintypes.HANDLE
+kernel32.QueryFullProcessImageNameW.argtypes = [
+    wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD),
+]
+kernel32.QueryFullProcessImageNameW.restype = wintypes.BOOL
+kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+kernel32.CloseHandle.restype = wintypes.BOOL
+
+GA_ROOT = 2
+PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+MONITOR_DEFAULTTONEAREST = 2
+
+
+def exe_of_pid(pid: int) -> str | None:
+    """Basename of the process image, or None when it cannot be opened."""
+    handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid))
+    if not handle:
+        return None
+    try:
+        size = wintypes.DWORD(1024)
+        buf = ctypes.create_unicode_buffer(size.value)
+        if not kernel32.QueryFullProcessImageNameW(handle, 0, buf, ctypes.byref(size)):
+            return None
+        return buf.value.replace("/", "\\").rsplit("\\", 1)[-1] or None
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+class _FILETIME(ctypes.Structure):
+    _fields_ = [("dwLowDateTime", wintypes.DWORD), ("dwHighDateTime", wintypes.DWORD)]
+
+
+kernel32.GetProcessTimes.argtypes = [wintypes.HANDLE] + [ctypes.POINTER(_FILETIME)] * 4
+kernel32.GetProcessTimes.restype = wintypes.BOOL
+
+
+def process_cpu_ms(pid: int) -> int | None:
+    """Kernel + user CPU time the process has used so far, in milliseconds."""
+    handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid))
+    if not handle:
+        return None
+    try:
+        created, exited, kernel, user = _FILETIME(), _FILETIME(), _FILETIME(), _FILETIME()
+        if not kernel32.GetProcessTimes(
+            handle, ctypes.byref(created), ctypes.byref(exited), ctypes.byref(kernel), ctypes.byref(user)
+        ):
+            return None
+
+        def ticks(ft: _FILETIME) -> int:
+            return (ft.dwHighDateTime << 32) | ft.dwLowDateTime
+
+        return (ticks(kernel) + ticks(user)) // 10_000  # 100 ns units -> ms
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+def root_window(hwnd: int) -> int:
+    """Top-level ancestor of hwnd (hwnd itself when it already is one, 0 if invalid)."""
+    if not hwnd:
+        return 0
+    return int(user32.GetAncestor(hwnd, GA_ROOT) or 0)
+
+
+def root_window_at(x: int, y: int) -> int:
+    """Top-level window under a screen point (0 when nothing is there).
+    WindowFromPoint skips hidden, disabled and click-through windows."""
+    hwnd = user32.WindowFromPoint(wintypes.POINT(int(x), int(y)))
+    return root_window(int(hwnd or 0))
+
+
+def monitor_index_of_hwnd(hwnd: int) -> int | None:
+    """Index of the monitor the window is mostly on, in EnumDisplayMonitors order."""
+    target = user32.MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST)
+    if not target:
+        return None
+    handles: list[int] = []
+
+    @ctypes.WINFUNCTYPE(wintypes.BOOL, ctypes.c_void_p, ctypes.c_void_p, ctypes.POINTER(wintypes.RECT), wintypes.LPARAM)
+    def enum_proc(hmonitor, hdc, rect, lparam):
+        handles.append(hmonitor)
+        return True
+
+    user32.EnumDisplayMonitors(None, None, enum_proc, 0)
+    try:
+        return handles.index(target)
+    except ValueError:
+        return None
+
+
+DWMWA_EXTENDED_FRAME_BOUNDS = 9
+
+
+def extended_frame_bounds(hwnd: int) -> tuple[int, int, int, int] | None:
+    """The window's visible bounds as DWM composes them (no drop shadow); the
+    size of a Windows.Graphics.Capture frame of this window."""
+    rect = wintypes.RECT()
+    try:
+        dwmapi = ctypes.WinDLL("dwmapi")
+        hr = dwmapi.DwmGetWindowAttribute(
+            wintypes.HWND(hwnd), DWMWA_EXTENDED_FRAME_BOUNDS, ctypes.byref(rect), ctypes.sizeof(rect)
+        )
+    except (OSError, AttributeError):
+        return None
+    if hr != 0:
+        return None
+    return (rect.left, rect.top, rect.right, rect.bottom)
+
+
+def describe_window(hwnd: int) -> dict:
+    """Small, JSON-friendly identity of a window for error details."""
+    if not hwnd:
+        return {"hwnd": 0}
+    pid = wintypes.DWORD()
+    user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+    length = user32.GetWindowTextLengthW(hwnd)
+    buf = ctypes.create_unicode_buffer(length + 1)
+    user32.GetWindowTextW(hwnd, buf, length + 1)
+    return {"hwnd": int(hwnd), "pid": int(pid.value), "exe": exe_of_pid(pid.value), "title": buf.value}
 
 
 _AUX_WINDOW_CLASSES = {
@@ -213,6 +344,8 @@ def _window_info_from_hwnd(hwnd: int) -> WindowInfo | None:
         dpi=dpi,
         is_foreground=(user32.GetForegroundWindow() == hwnd),
         is_minimized=bool(user32.IsIconic(hwnd)),
+        exe=exe_of_pid(proc_pid.value),
+        monitor=monitor_index_of_hwnd(hwnd),
     )
 
 
@@ -300,8 +433,9 @@ def focus_window_detailed(pid: int) -> dict:
         # keybd_event is the legacy form but functionally equivalent to
         # SendInput for one key — and it doesn't require building INPUT
         # structures, which keeps this branch cheap.
-        user32.keybd_event(VK_MENU, 0, 0, 0)
-        user32.keybd_event(VK_MENU, 0, KEYEVENTF_KEYUP, 0)
+        with _injecting():  # our own input: must not be mistaken for the user's
+            user32.keybd_event(VK_MENU, 0, 0, 0)
+            user32.keybd_event(VK_MENU, 0, KEYEVENTF_KEYUP, 0)
 
         fg_hwnd = user32.GetForegroundWindow()
         fg_tid = user32.GetWindowThreadProcessId(fg_hwnd, None) if fg_hwnd else 0
@@ -362,6 +496,41 @@ def get_foreground_hwnd() -> int:
     return int(user32.GetForegroundWindow() or 0)
 
 
+class _LASTINPUTINFO(ctypes.Structure):
+    _fields_ = [("cbSize", wintypes.UINT), ("dwTime", wintypes.DWORD)]
+
+
+kernel32.GetTickCount.restype = wintypes.DWORD
+
+
+def tick_count() -> int:
+    """GetTickCount (32-bit milliseconds, wraps every ~49.7 days)."""
+    return int(kernel32.GetTickCount())
+
+
+def last_input_tick() -> int | None:
+    """GetLastInputInfo.dwTime: tick of the last input event on this desktop
+    session, injected input included. None when the call fails."""
+    info = _LASTINPUTINFO(ctypes.sizeof(_LASTINPUTINFO), 0)
+    if not user32.GetLastInputInfo(ctypes.byref(info)):
+        return None
+    return int(info.dwTime)
+
+
+# Presence attribution hook: the daemon installs PresenceMonitor.injecting so
+# every SendInput/keybd_event is bracketed by "probe, send, note" under one lock.
+_injection_hook = None
+
+
+def set_injection_hook(factory) -> None:
+    global _injection_hook
+    _injection_hook = factory
+
+
+def _injecting():
+    return _injection_hook() if _injection_hook is not None else contextlib.nullcontext()
+
+
 def qpc_ns() -> int:
     """Monotonic high-resolution timestamp in nanoseconds (QueryPerformanceCounter
     on Windows via time.perf_counter_ns)."""
@@ -412,7 +581,8 @@ def translate_to_screen(
 def _send_inputs(inputs: list[INPUT]) -> int:
     arr_type = INPUT * len(inputs)
     arr = arr_type(*inputs)
-    return user32.SendInput(len(inputs), arr, ctypes.sizeof(INPUT))
+    with _injecting():
+        return user32.SendInput(len(inputs), arr, ctypes.sizeof(INPUT))
 
 
 _SCREEN_W = None

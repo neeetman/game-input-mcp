@@ -26,6 +26,7 @@ class FrameRecord:
     metadata_path: Path
     metadata: dict[str, Any]
     created_at: float
+    thumb_path: Path | None = None
 
 
 class FrameCache:
@@ -41,7 +42,17 @@ class FrameCache:
         self._now = now
         self.directory.mkdir(parents=True, exist_ok=True)
 
-    def store(self, image: Image.Image, metadata: dict[str, Any]) -> FrameRecord:
+    def _thumb_path(self, frame_id: str) -> Path:
+        # `thumb_<id>.png`, not `<frame_id>.thumb.png`: cleanup() treats any
+        # frame_*.png without a matching .json as an orphan and would delete it.
+        return self.directory / f"thumb_{frame_id}.png"
+
+    def store(
+        self,
+        image: Image.Image,
+        metadata: dict[str, Any],
+        thumb: Image.Image | None = None,
+    ) -> FrameRecord:
         frame_id = f"frame_{uuid4().hex}"
         created_at = self._now()
         enriched = {
@@ -52,8 +63,12 @@ class FrameCache:
         image_path = self.directory / f"{frame_id}.png"
         metadata_path = self.directory / f"{frame_id}.json"
         image.save(image_path, format="PNG", optimize=True)
+        thumb_path = None
+        if thumb is not None:
+            thumb_path = self._thumb_path(frame_id)
+            thumb.save(thumb_path, format="PNG", optimize=True)
         metadata_path.write_text(json.dumps(enriched, separators=(",", ":"), ensure_ascii=False), encoding="utf-8")
-        return FrameRecord(frame_id, image_path, metadata_path, enriched, created_at)
+        return FrameRecord(frame_id, image_path, metadata_path, enriched, created_at, thumb_path)
 
     def get(self, frame_id: str) -> FrameRecord | None:
         if _FRAME_ID_RE.fullmatch(frame_id) is None:
@@ -71,7 +86,10 @@ class FrameCache:
             return None
         if self._now() - created_at > self.ttl_sec:
             return None
-        return FrameRecord(frame_id, image_path, metadata_path, metadata, created_at)
+        thumb_path = self._thumb_path(frame_id)
+        return FrameRecord(
+            frame_id, image_path, metadata_path, metadata, created_at, thumb_path if thumb_path.exists() else None
+        )
 
     def cleanup(self) -> int:
         removed = 0
@@ -81,7 +99,7 @@ class FrameCache:
             if record is not None:
                 continue
             image_path = self.directory / f"{frame_id}.png"
-            for path in (metadata_path, image_path):
+            for path in (metadata_path, image_path, self._thumb_path(frame_id)):
                 if path.exists():
                     path.unlink()
                     removed += 1
@@ -90,5 +108,10 @@ class FrameCache:
             metadata_path = self.directory / f"{frame_id}.json"
             if not metadata_path.exists() and image_path.exists():
                 image_path.unlink()
+                removed += 1
+        for thumb_path in self.directory.glob("thumb_frame_*.png"):
+            frame_id = thumb_path.stem[len("thumb_"):]
+            if not (self.directory / f"{frame_id}.json").exists():
+                thumb_path.unlink()
                 removed += 1
         return removed

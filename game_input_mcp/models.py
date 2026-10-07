@@ -74,6 +74,8 @@ class TargetInfo:
     dpi: int
     is_foreground: bool
     is_minimized: bool = False
+    exe: str | None = None
+    monitor: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -87,6 +89,8 @@ class TargetInfo:
             "dpi": self.dpi,
             "is_foreground": self.is_foreground,
             "is_minimized": self.is_minimized,
+            "exe": self.exe,
+            "monitor": self.monitor,
         }
 
 

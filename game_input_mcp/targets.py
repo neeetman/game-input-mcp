@@ -22,6 +22,8 @@ def from_win32_info(info: Any) -> TargetInfo:
         dpi=int(info.dpi),
         is_foreground=bool(info.is_foreground),
         is_minimized=bool(getattr(info, "is_minimized", False)),
+        exe=getattr(info, "exe", None),
+        monitor=getattr(info, "monitor", None),
     )
 
 

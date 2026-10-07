@@ -1,0 +1,78 @@
+from __future__ import annotations
+
+import json
+
+import pytest
+
+from game_input_mcp import config
+
+
+def test_defaults_match_the_design_spec() -> None:
+    cfg = config.Config()
+
+    assert cfg.foreground_guard == "strict"
+    assert cfg.frame_geometry_check == "strict"
+    assert cfg.presence == "focus"
+    assert cfg.presence_idle_s == 30.0
+    assert cfg.capture_timeout_ms == 1500
+    assert cfg.allow_window_mutation is False
+
+
+def test_missing_file_gives_defaults(tmp_path) -> None:
+    assert config.load(tmp_path / "nope.json", env={}) == config.Config()
+
+
+def test_file_values_are_validated_and_bad_ones_ignored(tmp_path) -> None:
+    path = tmp_path / "config.json"
+    path.write_text(
+        json.dumps(
+            {
+                "presence": "strict",
+                "presence_idle_s": 12,
+                "foreground_guard": "banana",
+                "frame_geometry_check": "warn",
+                "no_such_key": 1,
+                "capture_timeout_ms": -5,
+            }
+        )
+    )
+
+    cfg = config.load(path, env={})
+
+    assert cfg.presence == "strict"
+    assert cfg.presence_idle_s == 12.0
+    assert cfg.foreground_guard == "strict"  # invalid -> default
+    assert cfg.frame_geometry_check == "warn"
+    assert cfg.capture_timeout_ms == 1500
+
+
+def test_environment_overrides_file(tmp_path) -> None:
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps({"presence": "strict"}))
+
+    cfg = config.load(path, env={"GAME_INPUT_PRESENCE": "off", "GAME_INPUT_ALLOW_WINDOW_MUTATION": "true"})
+
+    assert cfg.presence == "off"
+    assert cfg.allow_window_mutation is True
+
+
+def test_corrupt_file_never_stops_startup(tmp_path) -> None:
+    path = tmp_path / "config.json"
+    path.write_text("{not json")
+
+    assert config.load(path, env={}) == config.Config()
+
+
+def test_write_value_validates_and_persists(tmp_path) -> None:
+    path = tmp_path / "sub" / "config.json"
+
+    cfg = config.write_value("presence", "WARN", path)
+    config.write_value("presence_idle_s", "45", path)
+
+    assert cfg.presence == "warn"
+    assert json.loads(path.read_text())["presence"] == "warn"
+    assert config.load(path, env={}).presence_idle_s == 45.0
+    with pytest.raises(ValueError):
+        config.write_value("presence", "loud", path)
+    with pytest.raises(ValueError):
+        config.write_value("nope", "1", path)

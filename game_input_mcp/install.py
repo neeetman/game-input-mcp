@@ -108,15 +108,40 @@ def restart() -> None:
     print(f"[ok] task '{TASK_NAME}' restarted.")
 
 
+def set_config(assignments: list[str]) -> None:
+    """Persist daemon settings. Relaxing a guard is only possible here (the
+    config is read when the daemon starts), never per MCP call."""
+    from . import config
+
+    for item in assignments:
+        key, sep, value = item.partition("=")
+        if not sep:
+            raise SystemExit(f"expected KEY=VALUE, got {item!r}")
+        try:
+            config.write_value(key.strip(), value.strip())
+        except ValueError as exc:
+            raise SystemExit(f"{key}: {exc}") from exc
+        print(f"[ok] {key.strip()}={value.strip()} -> {config.default_config_path()}")
+    print("[info] run `python -m game_input_mcp.install --restart` (elevated) to apply.")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     g = ap.add_mutually_exclusive_group()
     g.add_argument("--uninstall", action="store_true")
     g.add_argument("--status", action="store_true")
     g.add_argument("--restart", action="store_true")
+    g.add_argument(
+        "--set",
+        metavar="KEY=VALUE",
+        action="append",
+        help="write a daemon setting to config.json (e.g. presence=strict); needs --restart to take effect",
+    )
     args = ap.parse_args()
 
-    if args.uninstall:
+    if args.set:
+        set_config(args.set)
+    elif args.uninstall:
         uninstall()
     elif args.status:
         status()

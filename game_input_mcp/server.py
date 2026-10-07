@@ -55,10 +55,24 @@ def capture(
     target: dict[str, Any],
     region: list[int] | None = None,
     scope: Literal["client", "screen"] = "client",
-    backend: Literal["auto", "dxcam", "mss", "pillow"] = "auto",
+    backend: Literal["auto", "dxcam", "mss", "pillow", "wgc"] = "auto",
     max_width: int = 1920,
+    thumb_width: int | None = None,
 ) -> dict:
-    """Capture target pixels and return frame metadata plus image_path."""
+    """Capture target pixels and return frame metadata plus image_path.
+
+    thumb_width also writes a small copy (thumb_path) of the same frame, cheap to
+    look at; click on it with scope="normalized" and the same frame_id.
+
+    backend="auto" grabs the screen region and escalates to Windows Graphics
+    Capture (wgc, needs `pip install game-input-mcp[wgc]`) when another window
+    covers the target, it hangs off screen or spans monitors, or the grab is
+    black. wgc captures the window itself, covered or not. The result may carry
+    `warnings` (TARGET_OCCLUDED, TARGET_OFFSCREEN, BLACK_FRAME, WGC_NO_NEW_FRAME,
+    WINDOW_MOVED_DURING_CAPTURE, FRAME_IDENTICAL_TO_PREVIOUS,
+    HDR_COLOR_SHIFT_POSSIBLE): read them before trusting the pixels.
+    """
+    options = {"thumb_width": thumb_width} if thumb_width else {}  # omitted for older daemons
     return _call(
         "capture",
         target=target,
@@ -66,6 +80,7 @@ def capture(
         scope=scope,
         backend=backend,
         max_width=max_width,
+        **options,
     )
 
 

@@ -12,6 +12,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Windows.Graphics.Capture backend (backend="wgc"). windows-capture ships an
+# abi3 wheel and pulls numpy + opencv-python; no runtime downloads.
+wgc = [
+    "windows-capture>=2.0.1; sys_platform == 'win32'",
+]
 dev = [
     "pytest>=8.0.0",
     "tomli>=2.0.0; python_version < '3.11'",

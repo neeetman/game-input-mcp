@@ -144,3 +144,15 @@ def test_mouse_move_relative_tool_calls_daemon(monkeypatch) -> None:
         "mouse_move_relative",
         {"session_id": "sid", "dx": 600, "dy": -40, "duration_ms": 800, "rate_hz": 250},
     )]
+
+
+def test_capture_forwards_thumb_width_only_when_set(monkeypatch) -> None:
+    calls = []
+    monkeypatch.setattr(server, "_call", lambda method, **params: calls.append(params) or {"success": True})
+
+    server.capture({"pid": 2}, thumb_width=480)
+    server.capture({"pid": 2}, backend="wgc")
+
+    assert calls[0]["thumb_width"] == 480
+    assert "thumb_width" not in calls[1]  # an older daemon never sees the new parameter
+    assert calls[1]["backend"] == "wgc"

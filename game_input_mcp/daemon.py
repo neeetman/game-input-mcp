@@ -20,8 +20,11 @@ from pathlib import Path
 
 import win32security
 
-from . import ipc, targets, win32
+from . import config as config_module
+from . import guard, ipc, presence, targets, win32
+from .capture import base as capture_base
 from .capture import service as capture_service
+from .capture import wgc as wgc_backend
 from .frames import FrameCache
 from .input import keys
 from .input.timeline import TimelineRunner, compile_timeline
@@ -43,6 +46,20 @@ log = logging.getLogger("game-input-daemon")
 
 FRAME_CACHE = FrameCache()
 SESSIONS = SessionRegistry()
+# Replaced by config_module.load() in main(); defaults keep tests hermetic.
+CONFIG = config_module.Config()
+PRESENCE = presence.PresenceMonitor(win32.last_input_tick, win32.tick_count)
+
+
+def _presence_reading() -> dict:
+    return PRESENCE.reading(CONFIG.presence, CONFIG.presence_idle_s)
+
+
+def _gate_focus_change(hwnd: int) -> guard.Outcome:
+    """Presence gate for anything that is about to take (or hold) the
+    foreground: stealing focus is class A, already being in front is class B."""
+    op = "inject" if win32.get_foreground_hwnd() == hwnd else "focus"
+    return guard.gate_presence(_presence_reading(), op)
 
 
 # === Handlers ===============================================================
@@ -68,9 +85,15 @@ def _h_get_window_info(p: dict) -> dict:
 
 
 def _h_focus_window(p: dict) -> dict:
+    info = win32.get_window_info(p["pid"])
+    outcome = guard.Outcome()
+    if info is not None:
+        outcome = _gate_focus_change(info.hwnd)
+        if not outcome.ok:
+            return outcome.error
     out = win32.focus_window_detailed(p["pid"])
     out["pid"] = p["pid"]
-    return out
+    return guard.annotate(out, outcome)
 
 
 def _h_list_targets(p: dict) -> dict:
@@ -82,30 +105,38 @@ def _h_get_target_info(p: dict) -> dict:
     target, error = _resolve_target(p)
     if error is not None:
         return error
-    return ok_response(target=target.to_dict())
+    return ok_response(target=target.to_dict(), presence=_presence_reading())
 
 
 def _h_focus_target(p: dict) -> dict:
     target, error = _resolve_target(p)
     if error is not None:
         return error
+    outcome = _gate_focus_change(target.hwnd)
+    if not outcome.ok:
+        return outcome.error
     out = win32.focus_window_detailed(target.pid)
     out["pid"] = target.pid
     out["target"] = target.to_dict()
-    return out
+    return guard.annotate(out, outcome)
 
 
 def _h_capture(p: dict) -> dict:
     _, error = _resolve_target(p)
     if error is not None:
         return error
+    backend = str(p.get("backend", "auto"))
+    if backend.strip().lower() == "auto":
+        backend = CONFIG.capture_backend  # daemon-level default, "auto" unless configured
     return capture_service.capture_target(
         target=p.get("target", p.get("pid")),
         region=p.get("region"),
         scope=p.get("scope", "client"),
-        backend=p.get("backend", "auto"),
+        backend=backend,
         max_width=p.get("max_width", 1920),
         cache=FRAME_CACHE,
+        timeout_ms=CONFIG.capture_timeout_ms,
+        thumb_width=p.get("thumb_width"),
     )
 
 
@@ -118,20 +149,26 @@ def _target_param(p: dict) -> dict | int:
     return p.get("target", p.get("pid"))
 
 
-def _frame_geometry(frame_id: str | None) -> FrameGeometry | None:
+def _frame_record_geometry(frame_id: str | None) -> tuple[FrameGeometry | None, int | None]:
     if not frame_id:
-        return None
+        return None, None
     record = FRAME_CACHE.get(frame_id)
     if record is None:
         raise KeyError(frame_id)
     geometry = record.metadata["geometry"]
     image = record.metadata["image"]
-    return FrameGeometry(
+    frame = FrameGeometry(
         image_size=(int(image["width"]), int(image["height"])),
         capture_rect_screen=Rect.from_list(geometry["capture_rect_screen"]),
         client_rect_screen=Rect.from_list(geometry["client_rect_screen"]),
         scale=float(image.get("scale", 1.0)),
     )
+    dpi = geometry.get("dpi")
+    return frame, int(dpi) if dpi is not None else None
+
+
+def _frame_geometry(frame_id: str | None) -> FrameGeometry | None:
+    return _frame_record_geometry(frame_id)[0]
 
 
 def _resolve_target(p: dict) -> tuple[TargetInfo | None, dict | None]:
@@ -149,197 +186,216 @@ def _resolve_target(p: dict) -> tuple[TargetInfo | None, dict | None]:
     return target, None
 
 
-def _resolve_frame(scope: str, frame_id: str | None) -> tuple[FrameGeometry | None, dict | None]:
+def _resolve_frame(scope: str, frame_id: str | None) -> tuple[FrameGeometry | None, int | None, dict | None]:
     try:
-        frame = _frame_geometry(frame_id)
+        frame, dpi = _frame_record_geometry(frame_id)
     except (KeyError, TypeError, ValueError):
-        frame = None
+        frame, dpi = None, None
     if scope in {"capture", "normalized"} and frame is None:
-        return None, error_response(
+        return None, None, error_response(
             "FRAME_NOT_FOUND",
             "Frame metadata was not found",
             retryable=True,
             frame_id=frame_id,
         )
-    return frame, None
+    return frame, dpi, None
 
 
-def _focus_if_requested(target_param, activate: bool) -> tuple[bool, dict | None]:
+def _activate_target(target: TargetInfo, activate: bool, settle_s: float) -> dict | None:
+    """Focus the target when asked. A failed focus is an error (the mouse tools
+    used to ignore it and send anyway). Stealing the foreground from an active
+    user is refused first when the presence policy says so."""
     if not activate:
-        return True, None
-    target, error = _resolve_target({"target": target_param})
-    if error is not None:
-        return False, error
+        return None
+    if win32.get_foreground_hwnd() != target.hwnd:
+        gate = guard.gate_presence(_presence_reading(), "focus")
+        if not gate.ok:
+            return gate.error
     if not win32.focus_window(target.pid):
-        return False, error_response(
+        return error_response(
             "FOCUS_FAILED",
             "Target window could not be focused",
             retryable=True,
             target=target.to_dict(),
         )
-    return True, None
+    if settle_s:
+        time.sleep(settle_s)
+    return None
+
+
+def _preflight_keyboard(p: dict, settle_s: float = 0.0) -> tuple[bool, guard.Outcome | None, dict | None]:
+    """Resolve, optionally focus, then require the target to be foreground.
+    Returns (focused, outcome, error); activate=False no longer means "send to
+    whatever is in front"."""
+    target, error = _resolve_target(p)
+    if error is not None:
+        return False, None, error
+    error = _activate_target(target, bool(p.get("activate", True)), settle_s)
+    if error is not None:
+        return False, None, error
+    outcome = guard.gate_foreground(target.hwnd, "keyboard", mode=CONFIG.foreground_guard)
+    if not outcome.ok:
+        return False, None, outcome.error
+    outcome = guard.merge(outcome, guard.gate_presence(_presence_reading(), "inject"))
+    if not outcome.ok:
+        return False, None, outcome.error
+    return True, outcome, None
+
+
+def _preflight_mouse(
+    p: dict,
+    points: list[tuple[float, float]],
+) -> tuple[TargetInfo | None, list[tuple[int, int]], guard.Outcome | None, dict | None]:
+    """Everything a scope-mapped mouse tool does before touching input:
+    validate scope and frame, refuse stale geometry, map the points, focus,
+    and require the target (or the pointer destination) to be foreground."""
+    target, error = _resolve_target(p)
+    if error is not None:
+        return None, [], None, error
+    scope = p.get("scope", "capture" if p.get("frame_id") else "framebuffer").lower().strip()
+    frame, frame_dpi, error = _resolve_frame(scope, p.get("frame_id"))
+    if error is not None:
+        return None, [], None, error
+    geometry = guard.Outcome()
+    if scope in {"capture", "normalized", "framebuffer"}:
+        geometry = guard.check_frame_geometry(frame, frame_dpi, target, mode=CONFIG.frame_geometry_check)
+        if not geometry.ok:
+            return None, [], None, geometry.error
+    mapped = [
+        point_to_screen(x, y, scope, target, frame=frame, framebuffer_size=_fb_size(p))
+        for x, y in points
+    ]
+    error = _activate_target(target, bool(p.get("activate", True)), 0.05)
+    if error is not None:
+        return None, [], None, error
+    gate = guard.gate_foreground(target.hwnd, "mouse_abs", point=mapped[0], mode=CONFIG.foreground_guard)
+    if not gate.ok:
+        return None, [], None, gate.error
+    merged = guard.merge(geometry, gate, guard.gate_presence(_presence_reading(), "inject"))
+    if not merged.ok:
+        return None, [], None, merged.error
+    return target, mapped, merged, None
+
+
+def _scope_of(p: dict) -> str:
+    return p.get("scope", "capture" if p.get("frame_id") else "framebuffer").lower().strip()
 
 
 def _h_mouse_click(p: dict) -> dict:
-    target, error = _resolve_target(p)
+    target, mapped, outcome, error = _preflight_mouse(p, [(p["x"], p["y"])])
     if error is not None:
         return error
-
-    if p.get("activate", True):
-        win32.focus_window(target.pid)
-        time.sleep(0.05)
-
-    scope = p.get("scope", "capture" if p.get("frame_id") else "framebuffer").lower().strip()
-    frame, error = _resolve_frame(scope, p.get("frame_id"))
-    if error is not None:
-        return error
-
-    sx, sy = point_to_screen(
-        p["x"],
-        p["y"],
-        scope,
-        target,
-        frame=frame,
-        framebuffer_size=_fb_size(p),
-    )
+    sx, sy = mapped[0]
     ok = win32.send_mouse_click(
         sx, sy, button=p.get("button", "left"), clicks=p.get("clicks", 1)
     )
-    return {
-        "success": ok,
-        "screen_coords": [sx, sy],
-        "scope": scope,
-        "translated_from": [p["x"], p["y"]],
-        "client_size": list(target.client_size),
-        "client_origin": list(target.client_screen_origin),
-        "target": target.to_dict(),
-    }
+    return guard.annotate(
+        {
+            "success": ok,
+            "screen_coords": [sx, sy],
+            "scope": _scope_of(p),
+            "translated_from": [p["x"], p["y"]],
+            "client_size": list(target.client_size),
+            "client_origin": list(target.client_screen_origin),
+            "target": target.to_dict(),
+        },
+        outcome,
+    )
 
 
 def _h_mouse_drag(p: dict) -> dict:
-    target, error = _resolve_target(p)
+    target, mapped, outcome, error = _preflight_mouse(
+        p, [(p["from_x"], p["from_y"]), (p["to_x"], p["to_y"])]
+    )
     if error is not None:
         return error
-
-    if p.get("activate", True):
-        win32.focus_window(target.pid)
-        time.sleep(0.05)
-
-    scope = p.get("scope", "capture" if p.get("frame_id") else "framebuffer").lower().strip()
-    frame, error = _resolve_frame(scope, p.get("frame_id"))
-    if error is not None:
-        return error
-
-    from_screen = point_to_screen(
-        p["from_x"],
-        p["from_y"],
-        scope,
-        target,
-        frame=frame,
-        framebuffer_size=_fb_size(p),
-    )
-    to_screen = point_to_screen(
-        p["to_x"],
-        p["to_y"],
-        scope,
-        target,
-        frame=frame,
-        framebuffer_size=_fb_size(p),
-    )
+    from_screen, to_screen = mapped
     ok = win32.send_mouse_drag(
         from_screen,
         to_screen,
         button=p.get("button", "left"),
         steps=p.get("steps", 10),
     )
-    return {
-        "success": ok,
-        "from_screen": list(from_screen),
-        "to_screen": list(to_screen),
-    }
+    return guard.annotate(
+        {"success": ok, "from_screen": list(from_screen), "to_screen": list(to_screen)},
+        outcome,
+    )
 
 
 def _h_scroll(p: dict) -> dict:
-    target, error = _resolve_target(p)
+    target, mapped, outcome, error = _preflight_mouse(p, [(p["x"], p["y"])])
     if error is not None:
         return error
-
-    if p.get("activate", True):
-        win32.focus_window(target.pid)
-        time.sleep(0.05)
-
-    scope = p.get("scope", "capture" if p.get("frame_id") else "framebuffer").lower().strip()
-    frame, error = _resolve_frame(scope, p.get("frame_id"))
-    if error is not None:
-        return error
-
-    sx, sy = point_to_screen(
-        p["x"],
-        p["y"],
-        scope,
-        target,
-        frame=frame,
-        framebuffer_size=_fb_size(p),
-    )
+    sx, sy = mapped[0]
     delta = p.get("delta", 120)
     ok = win32.send_scroll(sx, sy, delta)
-    return {"success": ok, "screen_coords": [sx, sy], "delta": delta}
+    return guard.annotate({"success": ok, "screen_coords": [sx, sy], "delta": delta}, outcome)
 
 
 def _h_send_keys(p: dict) -> dict:
-    focused, error = _focus_if_requested(_target_param(p), p.get("activate", True))
+    focused, outcome, error = _preflight_keyboard(p, settle_s=0.1)
     if error is not None:
         return error
-    if focused and p.get("activate", True):
-        time.sleep(0.1)
     ok = win32.send_keys(p["keys"])
-    return {"success": ok, "keys": p["keys"]}
+    return guard.annotate({"success": ok, "keys": p["keys"]}, outcome)
 
 
 def _h_key_down(p: dict) -> dict:
-    focused, error = _focus_if_requested(_target_param(p), p.get("activate", True))
+    focused, outcome, error = _preflight_keyboard(p)
     if error is not None:
         return error
     sent = win32.send_key_down(p["key"], p.get("mode", "scancode"))
-    return ok_response(
-        success=sent == 1,
-        sent=sent,
-        key=p["key"],
-        mode=p.get("mode", "scancode"),
-        focused=focused,
+    return guard.annotate(
+        ok_response(
+            success=sent == 1,
+            sent=sent,
+            key=p["key"],
+            mode=p.get("mode", "scancode"),
+            focused=focused,
+        ),
+        outcome,
     )
 
 
 def _h_key_up(p: dict) -> dict:
-    focused, error = _focus_if_requested(_target_param(p), p.get("activate", True))
-    if error is not None:
-        return error
+    # Releases are never gated: a stray key-up is harmless, a latched key-down
+    # is not. activate=True still focuses first (v1 behaviour).
+    if p.get("activate", True):
+        target, error = _resolve_target(p)
+        if error is not None:
+            return error
+        error = _activate_target(target, True, 0.0)
+        if error is not None:
+            return error
     sent = win32.send_key_up(p["key"], p.get("mode", "scancode"))
     return ok_response(
         success=sent == 1,
         sent=sent,
         key=p["key"],
         mode=p.get("mode", "scancode"),
-        focused=focused,
+        focused=True,
     )
 
 
 def _h_tap_key(p: dict) -> dict:
-    focused, error = _focus_if_requested(_target_param(p), p.get("activate", True))
+    focused, outcome, error = _preflight_keyboard(p)
     if error is not None:
         return error
     sent = win32.tap_key(p["key"], p.get("mode", "scancode"), p.get("hold_ms", 30))
-    return ok_response(
-        success=sent == 2,
-        sent=sent,
-        key=p["key"],
-        mode=p.get("mode", "scancode"),
-        focused=focused,
+    return guard.annotate(
+        ok_response(
+            success=sent == 2,
+            sent=sent,
+            key=p["key"],
+            mode=p.get("mode", "scancode"),
+            focused=focused,
+        ),
+        outcome,
     )
 
 
 def _h_hotkey(p: dict) -> dict:
-    focused, error = _focus_if_requested(_target_param(p), p.get("activate", True))
+    focused, outcome, error = _preflight_keyboard(p)
     if error is not None:
         return error
     names = p["keys"]
@@ -354,21 +410,27 @@ def _h_hotkey(p: dict) -> dict:
     sent = win32.send_edges(downs)
     sent += win32.send_edges(ups)
     expected = len(names) * 2
-    return ok_response(
-        success=sent == expected,
-        sent=sent,
-        keys=names,
-        mode=mode,
-        focused=focused,
+    return guard.annotate(
+        ok_response(
+            success=sent == expected,
+            sent=sent,
+            keys=names,
+            mode=mode,
+            focused=focused,
+        ),
+        outcome,
     )
 
 
 def _h_type_text(p: dict) -> dict:
-    focused, error = _focus_if_requested(_target_param(p), p.get("activate", True))
+    focused, outcome, error = _preflight_keyboard(p)
     if error is not None:
         return error
     sent = bool(win32.send_keys(p["text"]))
-    return ok_response(success=sent, sent=int(sent), text=p["text"], focused=focused)
+    return guard.annotate(
+        ok_response(success=sent, sent=int(sent), text=p["text"], focused=focused),
+        outcome,
+    )
 
 
 @dataclass
@@ -402,6 +464,7 @@ def _session_view(record: SessionRecord) -> dict:
         "age_ms": int(round((now - record.opened_at) * 1000.0)),
         "since_heartbeat_ms": int(round((now - record.last_heartbeat) * 1000.0)),
         "foreground": win32.get_foreground_hwnd() == record.hwnd,
+        "presence": _presence_reading(),
     }
 
 
@@ -421,7 +484,7 @@ def _release_session(record: SessionRecord, reason: str) -> list[str]:
     """Inject up edges for everything the session holds and clear its state.
     Ups go to whatever window is foreground: a stray key-up is harmless, a
     latched key-down is not."""
-    if reason != "aborted" and reason != "focus_lost":
+    if reason not in ("aborted", "focus_lost", "user_input"):
         _abort_running_timeline(record.session_id)
     edges = plan_release(record)
     released = [edge.name for edge in edges]
@@ -479,8 +542,13 @@ def _resolve_session(p: dict) -> tuple[SessionRecord | None, dict | None]:
 def _ensure_foreground(record: SessionRecord) -> dict | None:
     """Apply the session focus policy before an injection. acquire_each
     re-focuses (v1 behaviour); the other policies only verify and fail closed,
-    releasing everything held when the target lost the foreground."""
+    releasing everything held when the target lost the foreground. Under the
+    strict presence policy a user who is active also pauses the session."""
     if record.focus_policy == "acquire_each":
+        if win32.get_foreground_hwnd() != record.hwnd:
+            gate = guard.gate_presence(_presence_reading(), "focus")
+            if not gate.ok:
+                return gate.error
         if not win32.focus_window_detailed(record.pid).get("success"):
             return error_response(
                 "FOCUS_FAILED",
@@ -502,10 +570,35 @@ def _ensure_foreground(record: SessionRecord) -> dict | None:
             foreground_hwnd=foreground,
             released=released,
         )
+    taken_over = _user_took_over(record)
+    if taken_over is not None:
+        return taken_over
     if record.status == "paused":
         record.status = "active"
         record.reason = None
     return None
+
+
+def _user_took_over(record: SessionRecord) -> dict | None:
+    """Strict policy: real user input is the emergency brake. Release what the
+    session holds and pause it; it resumes by itself once the user has been
+    idle for the threshold (the same way FOCUS_LOST pauses resume)."""
+    reading = _presence_reading()
+    if reading["policy"] != "strict" or reading["state"] != "present":
+        return None
+    released = _release_session(record, "user_input")
+    record.status = "paused"
+    record.reason = "user_input"
+    return error_response(
+        "USER_TOOK_OVER",
+        "A user is active at this machine; held input was released and the session paused",
+        retryable=True,
+        session_id=record.session_id,
+        released=released,
+        user_idle_ms=reading["user_idle_ms"],
+        threshold_ms=reading["threshold_ms"],
+        retry_after_ms=max(0, reading["threshold_ms"] - int(reading["user_idle_ms"] or 0)),
+    )
 
 
 def _h_session_open(p: dict) -> dict:
@@ -513,6 +606,12 @@ def _h_session_open(p: dict) -> dict:
     if error is not None:
         return error
     focus_policy = str(p.get("focus", "acquire_once"))
+    if focus_policy in ("acquire_once", "acquire_each"):
+        gate = _gate_focus_change(target.hwnd)
+    else:
+        gate = guard.gate_presence(_presence_reading(), "inject")
+    if not gate.ok:
+        return gate.error
     try:
         record, replaced = SESSIONS.open(
             hwnd=target.hwnd,
@@ -549,7 +648,7 @@ def _h_session_open(p: dict) -> dict:
     view["target"] = target.to_dict()
     view["replaced_session_id"] = replaced.session_id if replaced is not None else None
     view["replaced_released"] = replaced_released
-    return ok_response(**view)
+    return guard.annotate(ok_response(**view), gate)
 
 
 def _h_session_close(p: dict) -> dict:
@@ -609,15 +708,18 @@ def _h_set_keys(p: dict) -> dict:
         # Track even a partial send: the release path must cover anything the
         # OS may have accepted.
         apply_edges(record, edges, now=SESSIONS.now())
-    return ok_response(
-        success=sent == len(edges),
-        session_id=record.session_id,
-        sent=sent,
-        expected=len(edges),
-        skipped=skipped,
-        qpc_ns=qpc,
-        held_keys=sorted(record.held_keys),
-        held_buttons=sorted(record.held_buttons),
+    return guard.annotate(
+        ok_response(
+            success=sent == len(edges),
+            session_id=record.session_id,
+            sent=sent,
+            expected=len(edges),
+            skipped=skipped,
+            qpc_ns=qpc,
+            held_keys=sorted(record.held_keys),
+            held_buttons=sorted(record.held_buttons),
+        ),
+        guard.gate_presence(_presence_reading(), "inject"),
     )
 
 
@@ -673,12 +775,19 @@ def _h_run_timeline(p: dict) -> dict:
         if record.focus_policy != "acquire_each":
             foreground_ok = lambda: win32.get_foreground_hwnd() == record.hwnd  # noqa: E731
 
+        def presence_gate() -> str | None:
+            reading = _presence_reading()
+            if reading["policy"] == "strict" and reading["state"] == "present":
+                return "user_input"
+            return None
+
         runner = TimelineRunner(
             send=win32.send_edges,
             clock=_timeline_clock,
             wait=_timeline_wait,
             qpc_ns=win32.qpc_ns,
             foreground_ok=foreground_ok,
+            gate=presence_gate,
             spin_margin_s=_timeline_spin_margin_s,
         )
         with runner.precise_timing():
@@ -690,9 +799,9 @@ def _h_run_timeline(p: dict) -> dict:
         if result.stopped_reason != "completed":
             released = _release_session(record, result.stopped_reason)
             run.released = released
-            if result.stopped_reason == "focus_lost":
+            if result.stopped_reason in ("focus_lost", "user_input"):
                 record.status = "paused"
-                record.reason = "focus_lost"
+                record.reason = result.stopped_reason
 
         payload = {
             "session_id": record.session_id,
@@ -713,6 +822,16 @@ def _h_run_timeline(p: dict) -> dict:
             )
         if result.stopped_reason == "aborted":
             return error_response("ABORTED", "Timeline aborted; held input was released", **payload)
+        if result.stopped_reason == "user_input":
+            reading = _presence_reading()
+            return error_response(
+                "USER_TOOK_OVER",
+                "A user became active during the timeline; held input was released",
+                retryable=True,
+                user_idle_ms=reading["user_idle_ms"],
+                threshold_ms=reading["threshold_ms"],
+                **payload,
+            )
         return error_response(
             "FOCUS_LOST",
             "Target window lost foreground during the timeline; held input was released",
@@ -851,8 +970,14 @@ def _setup_logging() -> None:
 
 
 def main() -> int:
+    global CONFIG
     _setup_logging()
+    CONFIG = config_module.load()
     log.info("starting; sid=%s pipe=%s", ipc.current_user_sid_str(), ipc.pipe_name())
+    log.info("config: %s", CONFIG)
+    # Every SendInput/keybd_event from here on is attributed to us, not the user.
+    win32.set_injection_hook(PRESENCE.injecting)
+    wgc_backend.configure(idle_ttl_s=CONFIG.wgc_idle_ttl_s)
 
     server = ipc.Server()
     for name, handler in HANDLERS.items():
@@ -871,6 +996,10 @@ def main() -> int:
         return 1
     finally:
         watchdog.stop()
+        try:
+            capture_base._get_backend("wgc").close_all()
+        except Exception:  # noqa: BLE001
+            log.exception("closing WGC sessions failed")
         released = _release_all_sessions("daemon_shutdown")
         if released:
             log.info("shutdown released %s", released)

@@ -1,8 +1,17 @@
 from __future__ import annotations
 
+import pytest
+
 from game_input_mcp import daemon
 from game_input_mcp.models import Rect, TargetInfo
 
+
+@pytest.fixture(autouse=True)
+def target_is_foreground(monkeypatch):
+    """One-shot tools now fail closed unless the target is foreground; the
+    handlers below exercise mapping and sending, so the target (hwnd 1) is in
+    front unless a test says otherwise (see test_guard_handlers.py)."""
+    monkeypatch.setattr(daemon.win32, "get_foreground_hwnd", lambda: 1)
 
 def _target() -> TargetInfo:
     return TargetInfo(
@@ -376,6 +385,7 @@ def test_hotkey_handler_sends_down_then_up(monkeypatch) -> None:
 
 
 def test_type_text_handler_wraps_send_keys_result(monkeypatch) -> None:
+    monkeypatch.setattr(daemon.targets, "resolve_target", lambda target: _target())
     monkeypatch.setattr(daemon.win32, "send_keys", lambda text: True)
 
     result = daemon._h_type_text(
