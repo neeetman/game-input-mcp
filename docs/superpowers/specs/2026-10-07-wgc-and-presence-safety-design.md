@@ -841,7 +841,8 @@ deviations:
 - **`auto` WGC-first** (D4): implemented as `auto_wgc_first` (default **false**),
   not as a changed default. H3 now holds on this machine (a WGC session ran with
   no visible border: 4 stray yellow-ish pixels around the window, measured from a
-  screen grab, non-elevated Python, Windows 11), which removes the main objection,
+  screen grab, non-elevated Python, Windows 11; the elevated, deployed daemon's own
+  WGC session showed 0), which removes the main objection,
   but the design said "after soak" and there has been none, WGC costs 0.4-1.3 s
   cold and 250 ms on a static window against ~0.2 s for a screen grab, and the
   escalation rules already send the cases where a screen grab is wrong to WGC.
