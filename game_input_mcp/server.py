@@ -17,10 +17,11 @@ from typing import Any, Literal
 
 from mcp.server.fastmcp import FastMCP
 
-from .ipc import Client, DaemonUnavailable
+from .ipc import Client, DaemonTimeout, DaemonUnavailable
 
 mcp = FastMCP("game-input")
 _client = Client()
+
 
 
 def _call(method: str, **params) -> dict:
@@ -28,6 +29,14 @@ def _call(method: str, **params) -> dict:
         return _client.call(method, **params)
     except DaemonUnavailable as e:
         return {"success": False, "found": False, "error": str(e)}
+    except DaemonTimeout:
+        return {
+            "success": False,
+            "error_code": "DAEMON_TIMEOUT",
+            "message": f"The daemon did not answer {method} in time; the request may still be running there.",
+            "retryable": False,
+            "details": {"method": method},
+        }
     except Exception as e:  # noqa: BLE001
         return {"success": False, "error": f"ipc error: {type(e).__name__}: {e}"}
 
@@ -82,6 +91,23 @@ def capture(
         max_width=max_width,
         **options,
     )
+
+
+@mcp.tool()
+def set_window_geometry(
+    target: dict[str, Any],
+    client_size: list[int] | None = None,
+    position: list[int] | None = None,
+) -> dict:
+    """Resize the target's CLIENT area to [width, height] and/or move its top-left
+    to [x, y] (screen pixels), e.g. to make a windowed game 1920x1080.
+
+    Disabled unless the daemon is configured with allow_window_mutation=true
+    (WINDOW_MUTATION_DISABLED). Refuses minimized, maximized and fullscreen
+    windows (WINDOW_RESIZE_FAILED). Does not focus or reorder the window. Frames
+    captured before the change no longer match the window: capture again.
+    """
+    return _call("set_window_geometry", target=target, client_size=client_size, position=position)
 
 
 @mcp.tool()
@@ -376,6 +402,7 @@ def run_timeline(
         events=events,
         total_ms=total_ms,
         allow_dangling=allow_dangling,
+        read_timeout_s=total_ms / 1000.0 + Client.LONG_CALL_SLACK_S,
     )
 
 
@@ -402,6 +429,7 @@ def mouse_move_relative(
         dy=dy,
         duration_ms=duration_ms,
         rate_hz=rate_hz,
+        read_timeout_s=duration_ms / 1000.0 + Client.LONG_CALL_SLACK_S,
     )
 
 

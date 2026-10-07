@@ -7,8 +7,13 @@ elevated Win32 `SendInput` daemon.
 ## Tools
 
 - `list_targets()` - list visible candidate game windows.
-- `get_target_info(target)` - resolve pid/hwnd and return window, client, DPI,
-  monitor, and foreground metadata.
+- `get_target_info(target)` - resolve the target and return window, client, DPI,
+  monitor, exe, foreground metadata and the user `presence`. A target is
+  `{"pid"}`, `{"hwnd"}`, or `{"exe": "Game.exe"}` / `{"title": "substring"}`
+  (several processes match: `TARGET_AMBIGUOUS` with `details.candidates`).
+- `set_window_geometry(target, client_size?, position?)` - resize the client area
+  and/or move a windowed game. Off unless the daemon sets
+  `allow_window_mutation`; refuses minimized, maximized and fullscreen windows.
 - `capture(target, region?, scope?, backend?, max_width?)` - capture target
   pixels and return `frame_id`, `image_path`, and geometry metadata.
 - `focus_target(target)` / `focus_window(pid)` - bring the target foreground.
@@ -142,6 +147,14 @@ resumes by itself after the user has been idle for `presence_idle_s`. Errors
 carry `retry_after_ms`. Gamepad input is not visible to this signal, and input
 from other injectors counts as the user's.
 
+## Timeouts
+
+Every client call waits at most 30 s for the daemon (`DAEMON_TIMEOUT`, not
+retryable: the request may still be running there). `run_timeline` and
+`mouse_move_relative` wait for their own duration plus 5 s. Pass
+`read_timeout_s=` to `game_input_mcp.client.Client.call` / `invoke` to change it
+(`None` = unbounded); it is never forwarded to the daemon.
+
 ## Configuration
 
 Settings are read when the daemon starts from
@@ -163,6 +176,8 @@ python -m game_input_mcp.install --restart
 | `capture_backend` | `auto`, `dxcam`, `mss`, `pillow`, `wgc` | `auto` |
 | `capture_timeout_ms` | ms | `1500` |
 | `wgc_idle_ttl_s` | seconds | `5` |
+| `auto_wgc_first` | bool: `auto` tries `wgc` before the screen backends | `false` |
+| `allow_window_mutation` | bool: enables `set_window_geometry` | `false` |
 
 ## Coordinate Scopes
 

@@ -23,6 +23,7 @@ import itertools
 import json
 import struct
 import threading
+import time
 from typing import Any, Callable
 
 import pywintypes
@@ -66,10 +67,38 @@ def pipe_name(sid: str | None = None) -> str:
 
 # === Framed read/write =====================================================
 
-def _read_exact(handle, n: int) -> bytes:
-    """Read exactly n bytes from a pipe handle, or raise EOFError on close."""
+class DaemonTimeout(TimeoutError):
+    """The daemon did not answer within the read timeout (the request may still
+    be running in the daemon)."""
+
+
+def _wait_readable(handle, deadline: float | None) -> None:
+    """Block until the pipe has bytes to read (or is closed, so ReadFile can
+    report it), raising DaemonTimeout at ``deadline`` (time.monotonic()).
+    Handles are synchronous, so a plain ReadFile cannot time out; polling
+    PeekNamedPipe can."""
+    if deadline is None:
+        return
+    delay = 0.0002
+    while True:
+        try:
+            _, available, _ = win32pipe.PeekNamedPipe(handle, 0)
+        except pywintypes.error:
+            return  # broken/closed: let ReadFile raise the proper EOF
+        if available:
+            return
+        if time.monotonic() >= deadline:
+            raise DaemonTimeout("daemon did not answer in time")
+        time.sleep(delay)
+        delay = min(delay * 2, 0.005)
+
+
+def _read_exact(handle, n: int, deadline: float | None = None) -> bytes:
+    """Read exactly n bytes from a pipe handle, or raise EOFError on close.
+    With a deadline, raise DaemonTimeout instead of blocking forever."""
     buf = b""
     while len(buf) < n:
+        _wait_readable(handle, deadline)
         try:
             hr, chunk = win32file.ReadFile(handle, n - len(buf))
         except pywintypes.error as e:
@@ -83,14 +112,15 @@ def _read_exact(handle, n: int) -> bytes:
     return buf
 
 
-def read_frame(handle) -> dict:
-    header = _read_exact(handle, _LENGTH_HEADER.size)
+def read_frame(handle, timeout_s: float | None = None) -> dict:
+    deadline = None if timeout_s is None else time.monotonic() + timeout_s
+    header = _read_exact(handle, _LENGTH_HEADER.size, deadline)
     (length,) = _LENGTH_HEADER.unpack(header)
     if length == 0:
         return {}
     if length > _MAX_FRAME_BYTES:
         raise ValueError(f"frame too large: {length} bytes")
-    payload = _read_exact(handle, length)
+    payload = _read_exact(handle, length, deadline)
     return json.loads(payload.decode("utf-8"))
 
 
@@ -113,19 +143,28 @@ class Client:
     sub-millisecond — negligible vs SendInput latency.
     """
 
+    # Without a bound, a hung daemon handler hangs the caller forever. Calls
+    # that legitimately run long (timelines) pass a larger `read_timeout_s`.
+    DEFAULT_READ_TIMEOUT_S = 30.0
+    # Calls that run inside the daemon for a known time get that time plus this.
+    LONG_CALL_SLACK_S = 5.0
+
     def __init__(self, name: str | None = None) -> None:
         self._name = name or pipe_name()
         self._id_counter = itertools.count(1)
         self._id_lock = threading.Lock()
 
     def call(self, method: str, **params: Any) -> Any:
+        """``read_timeout_s`` is reserved: it bounds the wait for the answer
+        (None = unbounded) and is not forwarded to the daemon."""
+        read_timeout_s = params.pop("read_timeout_s", self.DEFAULT_READ_TIMEOUT_S)
         with self._id_lock:
             req_id = next(self._id_counter)
 
         handle = self._connect()
         try:
             write_frame(handle, {"id": req_id, "method": method, "params": params})
-            resp = read_frame(handle)
+            resp = read_frame(handle, read_timeout_s)
         finally:
             try:
                 win32file.CloseHandle(handle)

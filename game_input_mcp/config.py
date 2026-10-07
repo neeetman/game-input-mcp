@@ -29,6 +29,9 @@ class Config:
     capture_backend: str = "auto"
     capture_timeout_ms: int = 1500
     wgc_idle_ttl_s: float = 5.0
+    # backend="auto" tries wgc before the screen backends (it still falls through
+    # to them when wgc is not installed or fails). Off until it has soaked.
+    auto_wgc_first: bool = False
     allow_window_mutation: bool = False
 
 
@@ -80,6 +83,7 @@ _CONVERTERS = {
     "capture_backend": _choice(CAPTURE_BACKENDS),
     "capture_timeout_ms": _positive_int,
     "wgc_idle_ttl_s": _positive_float,
+    "auto_wgc_first": _boolean,
     "allow_window_mutation": _boolean,
 }
 

@@ -55,7 +55,7 @@ def _warning(code: str, message: str, **details) -> dict:
 
 
 def _capture_with_escalation(
-    resolved: TargetInfo, rect: Rect, backend: str, timeout_ms: int | None
+    resolved: TargetInfo, rect: Rect, backend: str, timeout_ms: int | None, wgc_first: bool = False
 ) -> tuple[CaptureResult, list[dict]]:
     """Capture, escalating `auto` to the window-targeted backend when a screen
     grab cannot be trusted: another window covers the target, part of it is off
@@ -68,7 +68,7 @@ def _capture_with_escalation(
     if selected == "auto":
         visibility = diagnostics.probe_visibility(resolved, rect)
         spans_monitors = not diagnostics.within_one_monitor(rect)
-        if visibility["occluders"] or visibility["offscreen"] or spans_monitors:
+        if wgc_first or visibility["occluders"] or visibility["offscreen"] or spans_monitors:
             prefer = ("wgc",)
 
     captured = capture_region(rect, backend=backend, target=resolved, timeout_ms=timeout_ms, prefer=prefer)
@@ -184,8 +184,17 @@ def capture_target(
     cache: FrameCache | None = None,
     timeout_ms: int | None = None,
     thumb_width: int | None = None,
+    wgc_first: bool = False,
 ) -> dict:
-    resolved = targets.resolve_target(target)
+    try:
+        resolved = targets.resolve_target(target)
+    except targets.TargetAmbiguous as exc:
+        return error_response(
+            "TARGET_AMBIGUOUS",
+            "The target matches windows of more than one process; pass pid or hwnd, or narrow exe/title",
+            retryable=False,
+            candidates=exc.candidates,
+        )
     if resolved is None:
         return error_response("TARGET_NOT_FOUND", "Target window was not found", retryable=True, target=target)
     if resolved.is_minimized:
@@ -209,7 +218,7 @@ def capture_target(
         )
 
     try:
-        captured, warnings = _capture_with_escalation(resolved, rect, backend, timeout_ms)
+        captured, warnings = _capture_with_escalation(resolved, rect, backend, timeout_ms, wgc_first)
     except CaptureError as exc:
         return error_response(exc.code, str(exc), retryable=exc.retryable, **{"backend": backend, **exc.details})
     except Exception as exc:

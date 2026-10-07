@@ -76,3 +76,13 @@ def test_write_value_validates_and_persists(tmp_path) -> None:
         config.write_value("presence", "loud", path)
     with pytest.raises(ValueError):
         config.write_value("nope", "1", path)
+
+
+def test_auto_wgc_first_is_off_by_default_and_settable(tmp_path) -> None:
+    assert config.Config().auto_wgc_first is False
+    path = tmp_path / "c.json"
+
+    config.write_value("auto_wgc_first", "true", path)
+
+    assert config.load(path, env={}).auto_wgc_first is True
+    assert config.load(path, env={"GAME_INPUT_AUTO_WGC_FIRST": "0"}).auto_wgc_first is False

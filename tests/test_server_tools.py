@@ -129,7 +129,11 @@ def test_timeline_tools_call_daemon_methods(monkeypatch) -> None:
     assert server.abort_timeline("sid")["success"] is True
 
     assert calls == [
-        ("run_timeline", {"session_id": "sid", "events": events, "total_ms": 200, "allow_dangling": False}),
+        (
+            "run_timeline",
+            # the wait for the answer covers the timeline itself plus slack
+            {"session_id": "sid", "events": events, "total_ms": 200, "allow_dangling": False, "read_timeout_s": 5.2},
+        ),
         ("abort_timeline", {"session_id": "sid"}),
     ]
 
@@ -142,7 +146,7 @@ def test_mouse_move_relative_tool_calls_daemon(monkeypatch) -> None:
 
     assert calls == [(
         "mouse_move_relative",
-        {"session_id": "sid", "dx": 600, "dy": -40, "duration_ms": 800, "rate_hz": 250},
+        {"session_id": "sid", "dx": 600, "dy": -40, "duration_ms": 800, "rate_hz": 250, "read_timeout_s": 5.8},
     )]
 
 

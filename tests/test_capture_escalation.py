@@ -203,3 +203,41 @@ def test_windows_graphics_capture_alias_is_treated_as_explicit(env) -> None:
     _capture(env, backend="windows_graphics_capture")
 
     assert env.probes == 0
+
+
+def test_wgc_first_prefers_wgc_even_for_a_clear_window(env) -> None:
+    env.results["wgc"] = CaptureResult(_image("blue"), "wgc", "window")
+
+    result = service.capture_target({"pid": 2}, cache=env.cache, backend="auto", wgc_first=True)
+
+    assert env.calls[0]["prefer"] == ("wgc",)
+    assert result["backend"]["name"] == "wgc" and "warnings" not in result
+
+
+def test_wgc_first_leaves_explicit_backends_alone(env) -> None:
+    service.capture_target({"pid": 2}, cache=env.cache, backend="dxcam", wgc_first=True)
+
+    assert env.calls[0]["prefer"] == () and env.probes == 0
+
+
+def test_default_order_is_unchanged_without_the_switch(env) -> None:
+    service.capture_target({"pid": 2}, cache=env.cache, backend="auto")
+
+    assert env.calls[0]["prefer"] == ()
+
+
+def test_the_daemon_passes_the_config_switch_through(monkeypatch) -> None:
+    import dataclasses
+
+    from game_input_mcp import config, daemon
+
+    seen = {}
+    monkeypatch.setattr(daemon.targets, "resolve_target", lambda target: _target())
+    monkeypatch.setattr(daemon.capture_service, "capture_target", lambda **kwargs: seen.update(kwargs) or {"success": True})
+
+    daemon._h_capture({"target": {"pid": 2}})
+    assert seen["wgc_first"] is False
+
+    monkeypatch.setattr(daemon, "CONFIG", dataclasses.replace(config.Config(), auto_wgc_first=True))
+    daemon._h_capture({"target": {"pid": 2}})
+    assert seen["wgc_first"] is True

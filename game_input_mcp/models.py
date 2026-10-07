@@ -33,6 +33,8 @@ class Rect:
 class TargetSpec:
     pid: int | None = None
     hwnd: int | None = None
+    exe: str | None = None      # process image name, case-insensitive, ".exe" optional
+    title: str | None = None    # case-insensitive substring of the window title
 
     @classmethod
     def from_value(cls, value: int | dict[str, Any] | "TargetSpec") -> "TargetSpec":
@@ -43,22 +45,30 @@ class TargetSpec:
         elif isinstance(value, dict):
             pid = value.get("pid")
             hwnd = value.get("hwnd")
+            exe = value.get("exe")
+            title = value.get("title")
             spec = cls(
                 pid=int(pid) if pid is not None else None,
                 hwnd=int(hwnd) if hwnd is not None else None,
+                exe=str(exe).strip() or None if exe is not None else None,
+                title=str(title).strip() or None if title is not None else None,
             )
         else:
-            raise ValueError("target must be a pid integer or object with pid or hwnd")
-        if spec.pid is None and spec.hwnd is None:
-            raise ValueError("target must include pid or hwnd")
+            raise ValueError("target must be a pid integer or an object with pid, hwnd, exe or title")
+        if spec.pid is None and spec.hwnd is None and spec.exe is None and spec.title is None:
+            raise ValueError("target must include pid, hwnd, exe or title")
         return spec
 
-    def to_dict(self) -> dict[str, int]:
-        out: dict[str, int] = {}
+    def to_dict(self) -> dict[str, int | str]:
+        out: dict[str, int | str] = {}
         if self.pid is not None:
             out["pid"] = self.pid
         if self.hwnd is not None:
             out["hwnd"] = self.hwnd
+        if self.exe is not None:
+            out["exe"] = self.exe
+        if self.title is not None:
+            out["title"] = self.title
         return out
 
 

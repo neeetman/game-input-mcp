@@ -214,6 +214,65 @@ def monitor_index_of_hwnd(hwnd: int) -> int | None:
         return None
 
 
+GWL_STYLE = -16
+WS_CAPTION = 0x00C00000
+SWP_NOSIZE = 0x0001
+SWP_NOMOVE = 0x0002
+SWP_NOZORDER = 0x0004
+SWP_NOACTIVATE = 0x0010
+
+user32.GetWindowLongPtrW.argtypes = [wintypes.HWND, ctypes.c_int]
+user32.GetWindowLongPtrW.restype = ctypes.c_ssize_t
+user32.SetWindowPos.argtypes = [
+    wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, wintypes.UINT,
+]
+user32.SetWindowPos.restype = wintypes.BOOL
+
+
+def window_frame_kind(hwnd: int) -> dict:
+    """{"has_frame", "maximized", "minimized", "fullscreen"}: what kind of window
+    this is, to decide whether resizing it makes sense. "fullscreen" means the
+    window rectangle is exactly one monitor's (borderless or exclusive)."""
+    style = int(user32.GetWindowLongPtrW(hwnd, GWL_STYLE)) & 0xFFFFFFFF
+    wrect = wintypes.RECT()
+    user32.GetWindowRect(hwnd, ctypes.byref(wrect))
+    rect = (wrect.left, wrect.top, wrect.right, wrect.bottom)
+    return {
+        "has_frame": (style & WS_CAPTION) == WS_CAPTION,
+        "maximized": bool(user32.IsZoomed(hwnd)),
+        "minimized": bool(user32.IsIconic(hwnd)),
+        "fullscreen": any(
+            (m.left, m.top, m.right, m.bottom) == rect for m in get_monitor_rects()
+        ),
+    }
+
+
+def set_window_geometry(
+    hwnd: int,
+    client_size: tuple[int, int] | None = None,
+    position: tuple[int, int] | None = None,
+) -> tuple[bool, int]:
+    """Resize so the CLIENT area is client_size and/or move the window's top-left
+    to ``position`` (screen pixels). Does not activate or reorder the window.
+    Returns (ok, last_error)."""
+    wrect, crect = wintypes.RECT(), wintypes.RECT()
+    user32.GetWindowRect(hwnd, ctypes.byref(wrect))
+    user32.GetClientRect(hwnd, ctypes.byref(crect))
+    border_w = (wrect.right - wrect.left) - (crect.right - crect.left)
+    border_h = (wrect.bottom - wrect.top) - (crect.bottom - crect.top)
+    flags = SWP_NOZORDER | SWP_NOACTIVATE
+    x, y = position if position is not None else (0, 0)
+    cx = cy = 0
+    if client_size is not None:
+        cx, cy = int(client_size[0]) + border_w, int(client_size[1]) + border_h
+    else:
+        flags |= SWP_NOSIZE
+    if position is None:
+        flags |= SWP_NOMOVE
+    ok = bool(user32.SetWindowPos(hwnd, None, int(x), int(y), cx, cy, flags))
+    return ok, 0 if ok else ctypes.get_last_error()
+
+
 DWMWA_EXTENDED_FRAME_BOUNDS = 9
 
 

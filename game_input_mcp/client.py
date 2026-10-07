@@ -21,6 +21,7 @@ import itertools
 import json
 import struct
 import threading
+import time
 from contextlib import contextmanager
 from ctypes import wintypes
 from typing import Any, Iterator, Sequence
@@ -120,6 +121,11 @@ class _PipeTransport:
         k.WriteFile.argtypes = [wintypes.HANDLE, ctypes.c_void_p, wintypes.DWORD, ctypes.POINTER(wintypes.DWORD), ctypes.c_void_p]
         k.WriteFile.restype = wintypes.BOOL
         k.CloseHandle.argtypes = [wintypes.HANDLE]
+        k.PeekNamedPipe.argtypes = [
+            wintypes.HANDLE, ctypes.c_void_p, wintypes.DWORD, ctypes.c_void_p,
+            ctypes.POINTER(wintypes.DWORD), ctypes.c_void_p,
+        ]
+        k.PeekNamedPipe.restype = wintypes.BOOL
         k.WaitNamedPipeW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD]
         self._k = k
 
@@ -140,6 +146,23 @@ class _PipeTransport:
                 continue
             raise ctypes.WinError(err)
         raise DaemonUnavailable(f"pipe {name} busy after retries")
+
+    def wait_readable(self, handle, timeout_s: float) -> bool:
+        """True once the pipe has bytes (or is closed, so read() can report it),
+        False if ``timeout_s`` passes first. Handles are synchronous, so a plain
+        ReadFile cannot time out; polling PeekNamedPipe can."""
+        deadline = time.monotonic() + timeout_s
+        delay = 0.0002
+        available = wintypes.DWORD(0)
+        while True:
+            if not self._k.PeekNamedPipe(handle, None, 0, None, ctypes.byref(available), None):
+                return True  # broken/closed: let read() raise the proper EOF
+            if available.value:
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(delay)
+            delay = min(delay * 2, 0.005)
 
     def read(self, handle, n: int) -> bytes:
         buf = ctypes.create_string_buffer(n)
@@ -171,6 +194,10 @@ class _PipeTransport:
 class Client:
     """Thread-safe request/response client; one pipe connection per call."""
 
+    DEFAULT_READ_TIMEOUT_S = 30.0
+    # Calls that run inside the daemon for a known time get that time plus this.
+    LONG_CALL_SLACK_S = 5.0
+
     def __init__(self, name: str | None = None, transport: Any | None = None) -> None:
         self._name = name or pipe_name()
         self._transport = transport or _PipeTransport()
@@ -181,19 +208,29 @@ class Client:
     def name(self) -> str:
         return self._name
 
-    def _read_exact(self, handle, n: int) -> bytes:
+    def _read_exact(self, handle, n: int, deadline: float | None = None) -> bytes:
+        wait = getattr(self._transport, "wait_readable", None)
         out = b""
         while len(out) < n:
+            if deadline is not None and wait is not None and not wait(handle, max(0.0, deadline - time.monotonic())):
+                raise InputError(
+                    {
+                        "error_code": "DAEMON_TIMEOUT",
+                        "message": "the daemon did not answer in time (the request may still be running there)",
+                        "retryable": False,
+                    }
+                )
             out += self._transport.read(handle, n - len(out))
         return out
 
-    def _read_frame(self, handle) -> dict:
-        (length,) = _LENGTH_HEADER.unpack(self._read_exact(handle, _LENGTH_HEADER.size))
+    def _read_frame(self, handle, timeout_s: float | None = None) -> dict:
+        deadline = None if timeout_s is None else time.monotonic() + timeout_s
+        (length,) = _LENGTH_HEADER.unpack(self._read_exact(handle, _LENGTH_HEADER.size, deadline))
         if length == 0:
             return {}
         if length > _MAX_FRAME_BYTES:
             raise ProtocolError(f"frame too large: {length} bytes")
-        return json.loads(self._read_exact(handle, length).decode("utf-8"))
+        return json.loads(self._read_exact(handle, length, deadline).decode("utf-8"))
 
     def _write_frame(self, handle, obj: dict) -> None:
         payload = json.dumps(obj, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
@@ -202,13 +239,16 @@ class Client:
     def call(self, method: str, **params: Any) -> Any:
         """Raw daemon call. Returns the handler result verbatim (including
         structured ``success: false`` responses); raises InputError only for
-        transport-level daemon failures."""
+        transport-level daemon failures. ``read_timeout_s`` is reserved: it bounds
+        the wait for the answer (default 30 s, None = unbounded; DAEMON_TIMEOUT
+        when exceeded) and is not forwarded to the daemon."""
+        read_timeout_s = params.pop("read_timeout_s", self.DEFAULT_READ_TIMEOUT_S)
         with self._id_lock:
             req_id = next(self._ids)
         handle = self._transport.open(self._name)
         try:
             self._write_frame(handle, {"id": req_id, "method": method, "params": params})
-            resp = self._read_frame(handle)
+            resp = self._read_frame(handle, read_timeout_s)
         finally:
             try:
                 self._transport.close(handle)
@@ -353,12 +393,21 @@ class InputSession:
         self, events: Sequence[dict[str, Any]], total_ms: float, allow_dangling: bool = False
     ) -> dict:
         return self._invoke(
-            "run_timeline", events=list(events), total_ms=total_ms, allow_dangling=allow_dangling
+            "run_timeline",
+            events=list(events),
+            total_ms=total_ms,
+            allow_dangling=allow_dangling,
+            read_timeout_s=float(total_ms) / 1000.0 + Client.LONG_CALL_SLACK_S,
         )
 
     def look(self, dx: int, dy: int, duration_ms: float = 0, rate_hz: float = 250) -> dict:
         return self._invoke(
-            "mouse_move_relative", dx=int(dx), dy=int(dy), duration_ms=duration_ms, rate_hz=rate_hz
+            "mouse_move_relative",
+            dx=int(dx),
+            dy=int(dy),
+            duration_ms=duration_ms,
+            rate_hz=rate_hz,
+            read_timeout_s=float(duration_ms) / 1000.0 + Client.LONG_CALL_SLACK_S,
         )
 
     def abort(self) -> dict:

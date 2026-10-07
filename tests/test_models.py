@@ -34,7 +34,7 @@ def test_target_spec_accepts_target_dict() -> None:
 
 
 def test_target_spec_rejects_empty_target() -> None:
-    with pytest.raises(ValueError, match="pid or hwnd"):
+    with pytest.raises(ValueError, match="pid, hwnd, exe or title"):
         TargetSpec.from_value({})
 
 

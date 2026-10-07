@@ -1,9 +1,8 @@
 # WGC Capture and Presence/Foreground Safety Design
 
 Date: 2026-10-07
-Status: Phases 0-4 implemented 2026-10-07 (see "Implementation notes" at the end
-for what was measured and where the code deviates from the design below);
-Phase 5 not started.
+Status: Phases 0-5 implemented 2026-10-07 (see "Implementation notes" at the end
+for what was measured and where the code deviates from the design below).
 
 ## Summary
 
@@ -815,9 +814,46 @@ deviations:
 - **`thumb_width`** is forwarded to the daemon only when set, so a new MCP server
   still works against an older daemon.
 
+### Phase 5
+
+- **Client read timeout.** Neither client could time out: both use synchronous
+  pipe handles, and `ReadFile` on one cannot be bounded. Both now poll
+  `PeekNamedPipe` (0.2 ms backing off to 5 ms) before each read, against one
+  deadline per call. Default 30 s; `run_timeline` / `mouse_move_relative` pass
+  their duration + 5 s (`LONG_CALL_SLACK_S`); `None` restores the old unbounded
+  wait. `read_timeout_s` is a reserved keyword of `Client.call`/`invoke`, never
+  forwarded. Errors: `DaemonTimeout` (pywin32 client, mapped by the MCP server to
+  `DAEMON_TIMEOUT`) and `InputError` with `DAEMON_TIMEOUT` (stdlib client).
+  Tested on real named pipes. The 09-09 spec's `total_ms + 2000` is now `+ 5 s`.
+- **Targets by exe / title.** `TargetSpec` gains `exe` (basename, case-insensitive,
+  `.exe` optional, whole-name match) and `title` (case-insensitive substring);
+  `hwnd` and `pid` still win. Several windows of one process are not ambiguous
+  (largest client area, as for a pid); windows of several processes raise
+  `TargetAmbiguous` -> `TARGET_AMBIGUOUS` with up to 10 `{pid, hwnd, exe, title}`
+  candidates, from the daemon handlers and from `capture`.
+- **`set_window_geometry`** (D5: built). Gated by `allow_window_mutation`
+  (`WINDOW_MUTATION_DISABLED` with the `install --set` hint). Refuses minimized,
+  maximized and whole-monitor windows, and a client resize of a window without a
+  caption frame (`WINDOW_RESIZE_FAILED`); moving a frameless window is allowed.
+  Sizes 64..16384 per side. Never activates or reorders the window. A window that
+  clamps the size gets `WINDOW_SIZE_ADJUSTED`. Live: a tk window went 400x300 ->
+  640x480 and moved as asked; with the default config it was refused.
+- **`auto` WGC-first** (D4): implemented as `auto_wgc_first` (default **false**),
+  not as a changed default. H3 now holds on this machine (a WGC session ran with
+  no visible border: 4 stray yellow-ish pixels around the window, measured from a
+  screen grab, non-elevated Python, Windows 11), which removes the main objection,
+  but the design said "after soak" and there has been none, WGC costs 0.4-1.3 s
+  cold and 250 ms on a static window against ~0.2 s for a screen grab, and the
+  escalation rules already send the cases where a screen grab is wrong to WGC.
+  Turn it on with `install --set auto_wgc_first=true`; it still falls through to
+  the screen backends when `wgc` is missing or fails. Whether to make it the
+  default is left to whoever has run it for a while.
+- **Bridge convention** written down in `docs/bridge-contract.md`; no code.
+
 ### Not done
 
-Phase 5 (resolver by exe, `set_window_geometry`, default flip, client read
-timeout). The running daemon is installed from the main checkout, so none of
-this is live in it until that checkout is updated and `install --restart` is run
-from an elevated shell.
+Nothing from the design remains open except flipping the `auto_wgc_first` default.
+H7 (the odd-means-on Auto HDR parity rule), H8 (HDR also shifts the screen
+backends) and H9 (exclusive fullscreen) are unmeasured. The running daemon is
+installed from the main checkout, so changes are live in it only after that
+checkout is updated and the task restarted.

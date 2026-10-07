@@ -121,6 +121,87 @@ def _h_focus_target(p: dict) -> dict:
     return guard.annotate(out, outcome)
 
 
+MIN_CLIENT_SIZE = 64
+MAX_CLIENT_SIZE = 16384
+
+
+def _pair(value, name: str, low: int, high: int) -> tuple[int, int]:
+    if not isinstance(value, (list, tuple)) or len(value) != 2:
+        raise ValueError(f"{name} must be [x, y]")
+    a, b = int(value[0]), int(value[1])
+    if not (low <= a <= high and low <= b <= high):
+        raise ValueError(f"{name} values must be within [{low}, {high}]")
+    return a, b
+
+
+def _h_set_window_geometry(p: dict) -> dict:
+    """Resize the target's client area and/or move it. Mutates the target window,
+    so it is off unless the daemon config sets allow_window_mutation."""
+    if not CONFIG.allow_window_mutation:
+        return error_response(
+            "WINDOW_MUTATION_DISABLED",
+            "Changing a window's size or position is disabled for this daemon",
+            retryable=False,
+            hint="set allow_window_mutation=true with `python -m game_input_mcp.install --set allow_window_mutation=true` and restart the daemon",
+        )
+    target, error = _resolve_target(p)
+    if error is not None:
+        return error
+    try:
+        size = _pair(p["client_size"], "client_size", MIN_CLIENT_SIZE, MAX_CLIENT_SIZE) if p.get("client_size") is not None else None
+        position = _pair(p["position"], "position", -32768, 32767) if p.get("position") is not None else None
+    except (ValueError, TypeError) as exc:
+        return error_response("INVALID_PARAMS", str(exc))
+    if size is None and position is None:
+        return error_response("INVALID_PARAMS", "pass client_size and/or position")
+
+    kind = win32.window_frame_kind(target.hwnd)
+    refusal = None
+    if kind["minimized"]:
+        refusal = "the window is minimized"
+    elif kind["maximized"]:
+        refusal = "the window is maximized"
+    elif kind["fullscreen"]:
+        refusal = "the window covers a whole monitor (fullscreen or borderless fullscreen)"
+    elif size is not None and not kind["has_frame"]:
+        refusal = "the window has no caption frame, so its client size is not something to resize"
+    if refusal is not None:
+        return error_response(
+            "WINDOW_RESIZE_FAILED", f"Not changed: {refusal}", retryable=False, target=target.to_dict(), kind=kind
+        )
+
+    ok, last_error = win32.set_window_geometry(target.hwnd, size, position)
+    if not ok:
+        return error_response(
+            "WINDOW_RESIZE_FAILED",
+            "SetWindowPos failed",
+            retryable=True,
+            target=target.to_dict(),
+            win32_error=last_error,
+        )
+    after, error = _resolve_target({"target": {"hwnd": target.hwnd}})
+    if error is not None:
+        return error
+    warnings: list[dict] = []
+    if size is not None and tuple(after.client_size) != size:
+        warnings.append(
+            guard.warning(
+                "WINDOW_SIZE_ADJUSTED",
+                "The window did not take exactly the requested client size (a minimum or maximum size, or DPI rounding)",
+                requested=list(size),
+                actual=list(after.client_size),
+            )
+        )
+    return guard.annotate(
+        ok_response(
+            target=after.to_dict(),
+            requested={"client_size": list(size) if size else None, "position": list(position) if position else None},
+            hint="earlier frames no longer match this window; capture again before clicking",
+        ),
+        guard.Outcome(warnings=warnings),
+    )
+
+
 def _h_capture(p: dict) -> dict:
     _, error = _resolve_target(p)
     if error is not None:
@@ -137,6 +218,7 @@ def _h_capture(p: dict) -> dict:
         cache=FRAME_CACHE,
         timeout_ms=CONFIG.capture_timeout_ms,
         thumb_width=p.get("thumb_width"),
+        wgc_first=CONFIG.auto_wgc_first,
     )
 
 
@@ -171,9 +253,20 @@ def _frame_geometry(frame_id: str | None) -> FrameGeometry | None:
     return _frame_record_geometry(frame_id)[0]
 
 
+def _ambiguous_error(exc: "targets.TargetAmbiguous") -> dict:
+    return error_response(
+        "TARGET_AMBIGUOUS",
+        "The target matches windows of more than one process; pass pid or hwnd, or narrow exe/title",
+        retryable=False,
+        candidates=exc.candidates,
+    )
+
+
 def _resolve_target(p: dict) -> tuple[TargetInfo | None, dict | None]:
     try:
         target = targets.resolve_target(_target_param(p))
+    except targets.TargetAmbiguous as exc:
+        return None, _ambiguous_error(exc)
     except ValueError:
         target = None
     if target is None:
@@ -894,6 +987,7 @@ HANDLERS = {
     "get_target_info": _h_get_target_info,
     "focus_target": _h_focus_target,
     "capture": _h_capture,
+    "set_window_geometry": _h_set_window_geometry,
     "get_window_info": _h_get_window_info,
     "focus_window": _h_focus_window,
     "mouse_click": _h_mouse_click,
