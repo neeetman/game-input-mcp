@@ -16,7 +16,10 @@ from typing import Any, Mapping
 log = logging.getLogger("game-input-daemon.config")
 
 GUARD_MODES = ("strict", "warn", "off")
-PRESENCE_MODES = ("off", "warn", "focus", "strict")
+PRESENCE_MODES = ("off", "warn")
+# Policies that used to refuse input while the user was active. They no longer
+# exist; an old config.json keeps working and is read as "warn".
+LEGACY_PRESENCE_MODES = ("focus", "strict")
 CAPTURE_BACKENDS = ("auto", "dxcam", "mss", "pillow", "wgc")
 
 
@@ -24,7 +27,7 @@ CAPTURE_BACKENDS = ("auto", "dxcam", "mss", "pillow", "wgc")
 class Config:
     foreground_guard: str = "strict"
     frame_geometry_check: str = "strict"
-    presence: str = "focus"
+    presence: str = "warn"
     presence_idle_s: float = 30.0
     capture_backend: str = "auto"
     capture_timeout_ms: int = 1500
@@ -48,6 +51,14 @@ def _choice(allowed: tuple[str, ...]):
         return text
 
     return convert
+
+
+def _presence(value: Any) -> str:
+    text = str(value).strip().lower()
+    if text in LEGACY_PRESENCE_MODES:
+        log.warning("presence=%s no longer refuses input; treating it as 'warn'", text)
+        return "warn"
+    return _choice(PRESENCE_MODES)(text)
 
 
 def _positive_float(value: Any) -> float:
@@ -78,7 +89,7 @@ def _boolean(value: Any) -> bool:
 _CONVERTERS = {
     "foreground_guard": _choice(GUARD_MODES),
     "frame_geometry_check": _choice(GUARD_MODES),
-    "presence": _choice(PRESENCE_MODES),
+    "presence": _presence,
     "presence_idle_s": _positive_float,
     "capture_backend": _choice(CAPTURE_BACKENDS),
     "capture_timeout_ms": _positive_int,

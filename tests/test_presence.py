@@ -137,39 +137,28 @@ def test_concurrent_injection_is_never_mistaken_for_the_user() -> None:
     assert result["idle"] == 50_000
 
 
+def _reading(state="present", policy="warn", idle=4000):
+    return {"state": state, "user_idle_ms": idle, "threshold_ms": 30_000, "policy": policy, "source": "x"}
+
+
+def test_an_active_user_is_a_warning_and_never_an_error() -> None:
+    outcome = guard.presence_outcome(_reading())
+
+    assert outcome.ok and outcome.error is None
+    [warning] = outcome.warnings
+    assert warning["code"] == "USER_PRESENT"
+    assert warning["details"] == {"user_idle_ms": 4000, "threshold_ms": 30_000}
+
+
 @pytest.mark.parametrize(
-    ("policy", "state", "op", "expected"),
-    [
-        ("off", "present", "focus", "allow"),
-        ("off", "present", "inject", "allow"),
-        ("warn", "present", "focus", "warn"),
-        ("warn", "present", "inject", "warn"),
-        ("focus", "present", "focus", "refuse"),
-        ("focus", "present", "inject", "warn"),
-        ("strict", "present", "focus", "refuse"),
-        ("strict", "present", "inject", "refuse"),
-        ("strict", "away", "focus", "allow"),
-        ("focus", "unknown", "focus", "allow"),
-        ("warn", "away", "inject", "allow"),
-    ],
+    ("state", "policy"),
+    [("away", "warn"), ("unknown", "warn"), ("present", "off"), ("away", "off")],
 )
-def test_policy_matrix(policy, state, op, expected) -> None:
-    reading = {"state": state, "user_idle_ms": 4000, "threshold_ms": 30_000, "policy": policy, "source": "x"}
+def test_no_warning_when_nobody_is_there_or_the_policy_is_off(state, policy) -> None:
+    outcome = guard.presence_outcome(_reading(state=state, policy=policy))
 
-    outcome = guard.gate_presence(reading, op)
-
-    if expected == "allow":
-        assert outcome.ok and not outcome.warnings
-    elif expected == "warn":
-        assert outcome.ok and outcome.warnings[0]["code"] == "USER_PRESENT"
-    else:
-        assert not outcome.ok
-        error = outcome.error
-        assert error["error_code"] == "USER_PRESENT" and error["retryable"] is True
-        assert error["details"]["retry_after_ms"] == 26_000
-        assert error["details"]["policy"] == policy and error["details"]["op"] == op
+    assert outcome.ok and outcome.warnings == []
 
 
-def test_unknown_presence_op_is_a_programming_error() -> None:
-    with pytest.raises(ValueError):
-        guard.gate_presence({"state": "present", "policy": "warn"}, "dance")
+def test_there_is_no_way_left_to_refuse_input_for_a_present_user() -> None:
+    assert not hasattr(guard, "gate_presence")

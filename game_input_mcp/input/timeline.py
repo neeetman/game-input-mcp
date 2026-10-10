@@ -64,7 +64,7 @@ class BatchResult:
 
 @dataclass
 class RunResult:
-    stopped_reason: str  # completed | aborted | focus_lost | user_input
+    stopped_reason: str  # completed | aborted | focus_lost
     started_qpc_ns: int
     batches: list[BatchResult]
     pending_indices: list[int]
@@ -211,7 +211,6 @@ class TimelineRunner:
         wait: Callable[[threading.Event, float], bool] | None = None,
         qpc_ns: Callable[[], int] = time.perf_counter_ns,
         foreground_ok: Callable[[], bool] | None = None,
-        gate: Callable[[], str | None] | None = None,
         spin_margin_s: float = 0.002,
         max_wait_chunk_s: float = 0.05,
     ) -> None:
@@ -220,9 +219,6 @@ class TimelineRunner:
         self._wait = wait or _default_wait
         self._qpc_ns = qpc_ns
         self._foreground_ok = foreground_ok
-        # Extra per-batch stop condition: returns a stop reason (e.g.
-        # "user_input") or None to keep going. Checked after foreground_ok.
-        self._gate = gate
         self._spin_margin = spin_margin_s
         self._max_chunk = max_wait_chunk_s
 
@@ -257,11 +253,6 @@ class TimelineRunner:
             if self._foreground_ok is not None and not self._foreground_ok():
                 reason = "focus_lost"
                 break
-            if self._gate is not None:
-                stop = self._gate()
-                if stop:
-                    reason = stop
-                    break
             edges =[e.edge for e in batch.events]
             sent = self._send(edges)
             now = self._clock()

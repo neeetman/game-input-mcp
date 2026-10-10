@@ -129,23 +129,19 @@ closed, including `activate=False`:
 
 ## User Presence
 
-`get_target_info` returns `presence` (`state`, `user_idle_ms`, `threshold_ms`,
-`policy`). The daemon tells the user's input from its own (its `SendInput` also
-moves `GetLastInputInfo`), and applies a daemon-level policy:
+`get_target_info` returns `presence` (`state`: `present` / `away` / `unknown`,
+`user_idle_ms`, `threshold_ms`, `policy`). The daemon tells the user's input from
+its own (its `SendInput` also moves `GetLastInputInfo`), so the idle time is the
+user's, not the agent's.
 
-| Policy | Changing the foreground | Injecting into the foreground window | Running session / timeline |
-| --- | --- | --- | --- |
-| `off` | allow | allow | allow |
-| `warn` | warning | warning | warning |
-| `focus` (default) | `USER_PRESENT` | warning | warning |
-| `strict` | `USER_PRESENT` | `USER_PRESENT` | pause: `USER_TOOK_OVER` |
-
-Warnings appear as `warnings: [{"code": "USER_PRESENT", ...}]`. Under `strict`
-any real user input releases everything the session holds, stops a running
-timeline (partial log and `pending_indices` returned) and pauses the session; it
-resumes by itself after the user has been idle for `presence_idle_s`. Errors
-carry `retry_after_ms`. Gamepad input is not visible to this signal, and input
-from other injectors counts as the user's.
+Presence is information only. **It never makes the daemon skip, delay or stop
+input**: not a focus change, not a one-shot tool, not a running session or
+timeline. While a user is active, results carry
+`warnings: [{"code": "USER_PRESENT", ...}]` (`user_idle_ms`, `threshold_ms`) so the
+agent can decide for itself whether to wait. `presence=off` removes the warnings.
+Older `presence=focus` / `strict` settings, which used to refuse input
+(`USER_PRESENT`, `USER_TOOK_OVER`), are read as `warn`. Gamepad input is not
+visible to this signal, and input from other injectors counts as the user's.
 
 ## Timeouts
 
@@ -163,7 +159,7 @@ variables override the file. There is deliberately no per-call way to relax a
 guard. Write and apply them with:
 
 ```powershell
-python -m game_input_mcp.install --set presence=strict --set presence_idle_s=45
+python -m game_input_mcp.install --set presence=off --set presence_idle_s=45
 python -m game_input_mcp.install --restart
 ```
 
@@ -171,7 +167,7 @@ python -m game_input_mcp.install --restart
 | --- | --- | --- |
 | `foreground_guard` | `strict`, `warn`, `off` | `strict` |
 | `frame_geometry_check` | `strict`, `warn`, `off` | `strict` |
-| `presence` | `off`, `warn`, `focus`, `strict` | `focus` |
+| `presence` | `off`, `warn` | `warn` |
 | `presence_idle_s` | seconds | `30` |
 | `capture_backend` | `auto`, `dxcam`, `mss`, `pillow`, `wgc` | `auto` |
 | `capture_timeout_ms` | ms | `1500` |

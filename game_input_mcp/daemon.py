@@ -55,11 +55,9 @@ def _presence_reading() -> dict:
     return PRESENCE.reading(CONFIG.presence, CONFIG.presence_idle_s)
 
 
-def _gate_focus_change(hwnd: int) -> guard.Outcome:
-    """Presence gate for anything that is about to take (or hold) the
-    foreground: stealing focus is class A, already being in front is class B."""
-    op = "inject" if win32.get_foreground_hwnd() == hwnd else "focus"
-    return guard.gate_presence(_presence_reading(), op)
+def _presence_outcome() -> guard.Outcome:
+    """A warning when a user is active; never a reason to skip the input."""
+    return guard.presence_outcome(_presence_reading())
 
 
 # === Handlers ===============================================================
@@ -85,15 +83,9 @@ def _h_get_window_info(p: dict) -> dict:
 
 
 def _h_focus_window(p: dict) -> dict:
-    info = win32.get_window_info(p["pid"])
-    outcome = guard.Outcome()
-    if info is not None:
-        outcome = _gate_focus_change(info.hwnd)
-        if not outcome.ok:
-            return outcome.error
     out = win32.focus_window_detailed(p["pid"])
     out["pid"] = p["pid"]
-    return guard.annotate(out, outcome)
+    return guard.annotate(out, _presence_outcome())
 
 
 def _h_list_targets(p: dict) -> dict:
@@ -112,13 +104,10 @@ def _h_focus_target(p: dict) -> dict:
     target, error = _resolve_target(p)
     if error is not None:
         return error
-    outcome = _gate_focus_change(target.hwnd)
-    if not outcome.ok:
-        return outcome.error
     out = win32.focus_window_detailed(target.pid)
     out["pid"] = target.pid
     out["target"] = target.to_dict()
-    return guard.annotate(out, outcome)
+    return guard.annotate(out, _presence_outcome())
 
 
 MIN_CLIENT_SIZE = 64
@@ -296,14 +285,9 @@ def _resolve_frame(scope: str, frame_id: str | None) -> tuple[FrameGeometry | No
 
 def _activate_target(target: TargetInfo, activate: bool, settle_s: float) -> dict | None:
     """Focus the target when asked. A failed focus is an error (the mouse tools
-    used to ignore it and send anyway). Stealing the foreground from an active
-    user is refused first when the presence policy says so."""
+    used to ignore it and send anyway)."""
     if not activate:
         return None
-    if win32.get_foreground_hwnd() != target.hwnd:
-        gate = guard.gate_presence(_presence_reading(), "focus")
-        if not gate.ok:
-            return gate.error
     if not win32.focus_window(target.pid):
         return error_response(
             "FOCUS_FAILED",
@@ -329,10 +313,7 @@ def _preflight_keyboard(p: dict, settle_s: float = 0.0) -> tuple[bool, guard.Out
     outcome = guard.gate_foreground(target.hwnd, "keyboard", mode=CONFIG.foreground_guard)
     if not outcome.ok:
         return False, None, outcome.error
-    outcome = guard.merge(outcome, guard.gate_presence(_presence_reading(), "inject"))
-    if not outcome.ok:
-        return False, None, outcome.error
-    return True, outcome, None
+    return True, guard.merge(outcome, _presence_outcome()), None
 
 
 def _preflight_mouse(
@@ -364,10 +345,7 @@ def _preflight_mouse(
     gate = guard.gate_foreground(target.hwnd, "mouse_abs", point=mapped[0], mode=CONFIG.foreground_guard)
     if not gate.ok:
         return None, [], None, gate.error
-    merged = guard.merge(geometry, gate, guard.gate_presence(_presence_reading(), "inject"))
-    if not merged.ok:
-        return None, [], None, merged.error
-    return target, mapped, merged, None
+    return target, mapped, guard.merge(geometry, gate, _presence_outcome()), None
 
 
 def _scope_of(p: dict) -> str:
@@ -577,7 +555,7 @@ def _release_session(record: SessionRecord, reason: str) -> list[str]:
     """Inject up edges for everything the session holds and clear its state.
     Ups go to whatever window is foreground: a stray key-up is harmless, a
     latched key-down is not."""
-    if reason not in ("aborted", "focus_lost", "user_input"):
+    if reason not in ("aborted", "focus_lost"):
         _abort_running_timeline(record.session_id)
     edges = plan_release(record)
     released = [edge.name for edge in edges]
@@ -635,13 +613,8 @@ def _resolve_session(p: dict) -> tuple[SessionRecord | None, dict | None]:
 def _ensure_foreground(record: SessionRecord) -> dict | None:
     """Apply the session focus policy before an injection. acquire_each
     re-focuses (v1 behaviour); the other policies only verify and fail closed,
-    releasing everything held when the target lost the foreground. Under the
-    strict presence policy a user who is active also pauses the session."""
+    releasing everything held when the target lost the foreground."""
     if record.focus_policy == "acquire_each":
-        if win32.get_foreground_hwnd() != record.hwnd:
-            gate = guard.gate_presence(_presence_reading(), "focus")
-            if not gate.ok:
-                return gate.error
         if not win32.focus_window_detailed(record.pid).get("success"):
             return error_response(
                 "FOCUS_FAILED",
@@ -663,35 +636,10 @@ def _ensure_foreground(record: SessionRecord) -> dict | None:
             foreground_hwnd=foreground,
             released=released,
         )
-    taken_over = _user_took_over(record)
-    if taken_over is not None:
-        return taken_over
     if record.status == "paused":
         record.status = "active"
         record.reason = None
     return None
-
-
-def _user_took_over(record: SessionRecord) -> dict | None:
-    """Strict policy: real user input is the emergency brake. Release what the
-    session holds and pause it; it resumes by itself once the user has been
-    idle for the threshold (the same way FOCUS_LOST pauses resume)."""
-    reading = _presence_reading()
-    if reading["policy"] != "strict" or reading["state"] != "present":
-        return None
-    released = _release_session(record, "user_input")
-    record.status = "paused"
-    record.reason = "user_input"
-    return error_response(
-        "USER_TOOK_OVER",
-        "A user is active at this machine; held input was released and the session paused",
-        retryable=True,
-        session_id=record.session_id,
-        released=released,
-        user_idle_ms=reading["user_idle_ms"],
-        threshold_ms=reading["threshold_ms"],
-        retry_after_ms=max(0, reading["threshold_ms"] - int(reading["user_idle_ms"] or 0)),
-    )
 
 
 def _h_session_open(p: dict) -> dict:
@@ -699,12 +647,6 @@ def _h_session_open(p: dict) -> dict:
     if error is not None:
         return error
     focus_policy = str(p.get("focus", "acquire_once"))
-    if focus_policy in ("acquire_once", "acquire_each"):
-        gate = _gate_focus_change(target.hwnd)
-    else:
-        gate = guard.gate_presence(_presence_reading(), "inject")
-    if not gate.ok:
-        return gate.error
     try:
         record, replaced = SESSIONS.open(
             hwnd=target.hwnd,
@@ -741,7 +683,7 @@ def _h_session_open(p: dict) -> dict:
     view["target"] = target.to_dict()
     view["replaced_session_id"] = replaced.session_id if replaced is not None else None
     view["replaced_released"] = replaced_released
-    return guard.annotate(ok_response(**view), gate)
+    return guard.annotate(ok_response(**view), _presence_outcome())
 
 
 def _h_session_close(p: dict) -> dict:
@@ -812,7 +754,7 @@ def _h_set_keys(p: dict) -> dict:
             held_keys=sorted(record.held_keys),
             held_buttons=sorted(record.held_buttons),
         ),
-        guard.gate_presence(_presence_reading(), "inject"),
+        _presence_outcome(),
     )
 
 
@@ -868,19 +810,12 @@ def _h_run_timeline(p: dict) -> dict:
         if record.focus_policy != "acquire_each":
             foreground_ok = lambda: win32.get_foreground_hwnd() == record.hwnd  # noqa: E731
 
-        def presence_gate() -> str | None:
-            reading = _presence_reading()
-            if reading["policy"] == "strict" and reading["state"] == "present":
-                return "user_input"
-            return None
-
         runner = TimelineRunner(
             send=win32.send_edges,
             clock=_timeline_clock,
             wait=_timeline_wait,
             qpc_ns=win32.qpc_ns,
             foreground_ok=foreground_ok,
-            gate=presence_gate,
             spin_margin_s=_timeline_spin_margin_s,
         )
         with runner.precise_timing():
@@ -892,9 +827,9 @@ def _h_run_timeline(p: dict) -> dict:
         if result.stopped_reason != "completed":
             released = _release_session(record, result.stopped_reason)
             run.released = released
-            if result.stopped_reason in ("focus_lost", "user_input"):
+            if result.stopped_reason == "focus_lost":
                 record.status = "paused"
-                record.reason = result.stopped_reason
+                record.reason = "focus_lost"
 
         payload = {
             "session_id": record.session_id,
@@ -915,16 +850,6 @@ def _h_run_timeline(p: dict) -> dict:
             )
         if result.stopped_reason == "aborted":
             return error_response("ABORTED", "Timeline aborted; held input was released", **payload)
-        if result.stopped_reason == "user_input":
-            reading = _presence_reading()
-            return error_response(
-                "USER_TOOK_OVER",
-                "A user became active during the timeline; held input was released",
-                retryable=True,
-                user_idle_ms=reading["user_idle_ms"],
-                threshold_ms=reading["threshold_ms"],
-                **payload,
-            )
         return error_response(
             "FOCUS_LOST",
             "Target window lost foreground during the timeline; held input was released",

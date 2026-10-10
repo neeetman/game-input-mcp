@@ -3,6 +3,9 @@
 Date: 2026-10-07
 Status: Phases 0-5 implemented 2026-10-07 (see "Implementation notes" at the end
 for what was measured and where the code deviates from the design below).
+**Revised 2026-10-11: the presence policies that refuse or pause input were
+removed** (see "Revision" in the implementation notes); Design 2 below describes
+the original, now superseded, `focus` / `strict` behaviour.
 
 ## Summary
 
@@ -850,6 +853,24 @@ deviations:
   the screen backends when `wgc` is missing or fails. Whether to make it the
   default is left to whoever has run it for a while.
 - **Bridge convention** written down in `docs/bridge-contract.md`; no code.
+
+### Revision 2026-10-11: presence no longer skips input
+
+Requested by the owner: input must not be skipped because the user is active.
+Removed: the `focus` and `strict` presence policies, the `USER_PRESENT` error
+(`retry_after_ms`), `USER_TOOK_OVER`, the session pause with `reason: "user_input"`,
+the timeline `user_input` stop reason and `TimelineRunner`'s `gate` hook, and the
+`guard.gate_presence` function (replaced by `guard.presence_outcome`).
+Kept: the injection-aware `PresenceMonitor` (the idle time is still the user's, not
+the daemon's), `presence` in `get_target_info` and in session views, and a
+`USER_PRESENT` *warning* on results while a user is active. `presence` is now
+`off` | `warn`, default `warn`; an existing `focus` / `strict` setting is read as
+`warn`. The foreground guard (`TARGET_NOT_FOREGROUND`, `FOCUS_LOST`) is a separate
+safety and is unchanged, so input still never goes to a window that is not the
+target; what changed is that a user typing elsewhere no longer blocks anything
+on its own. This reopens the risk the original policy existed for (the GTA V
+incident in the gap analysis): an agent can take the foreground while a human is
+typing. The warning and `presence` are the only remaining signal.
 
 ### Not done
 

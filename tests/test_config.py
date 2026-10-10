@@ -12,7 +12,7 @@ def test_defaults_match_the_design_spec() -> None:
 
     assert cfg.foreground_guard == "strict"
     assert cfg.frame_geometry_check == "strict"
-    assert cfg.presence == "focus"
+    assert cfg.presence == "warn"
     assert cfg.presence_idle_s == 30.0
     assert cfg.capture_timeout_ms == 1500
     assert cfg.allow_window_mutation is False
@@ -27,7 +27,7 @@ def test_file_values_are_validated_and_bad_ones_ignored(tmp_path) -> None:
     path.write_text(
         json.dumps(
             {
-                "presence": "strict",
+                "presence": "off",
                 "presence_idle_s": 12,
                 "foreground_guard": "banana",
                 "frame_geometry_check": "warn",
@@ -39,7 +39,7 @@ def test_file_values_are_validated_and_bad_ones_ignored(tmp_path) -> None:
 
     cfg = config.load(path, env={})
 
-    assert cfg.presence == "strict"
+    assert cfg.presence == "off"
     assert cfg.presence_idle_s == 12.0
     assert cfg.foreground_guard == "strict"  # invalid -> default
     assert cfg.frame_geometry_check == "warn"
@@ -48,7 +48,7 @@ def test_file_values_are_validated_and_bad_ones_ignored(tmp_path) -> None:
 
 def test_environment_overrides_file(tmp_path) -> None:
     path = tmp_path / "config.json"
-    path.write_text(json.dumps({"presence": "strict"}))
+    path.write_text(json.dumps({"presence": "warn"}))
 
     cfg = config.load(path, env={"GAME_INPUT_PRESENCE": "off", "GAME_INPUT_ALLOW_WINDOW_MUTATION": "true"})
 
@@ -86,3 +86,18 @@ def test_auto_wgc_first_is_off_by_default_and_settable(tmp_path) -> None:
 
     assert config.load(path, env={}).auto_wgc_first is True
     assert config.load(path, env={"GAME_INPUT_AUTO_WGC_FIRST": "0"}).auto_wgc_first is False
+
+
+@pytest.mark.parametrize("legacy", ["focus", "strict", "STRICT"])
+def test_the_old_refusing_presence_policies_are_read_as_warn(tmp_path, legacy) -> None:
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps({"presence": legacy}))
+
+    assert config.load(path, env={}).presence == "warn"
+    assert config.load(tmp_path / "none.json", env={"GAME_INPUT_PRESENCE": legacy}).presence == "warn"
+    assert config.write_value("presence", legacy, tmp_path / "w.json").presence == "warn"
+    assert json.loads((tmp_path / "w.json").read_text())["presence"] == "warn"
+
+
+def test_presence_only_knows_off_and_warn() -> None:
+    assert config.PRESENCE_MODES == ("off", "warn")

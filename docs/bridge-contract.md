@@ -54,7 +54,7 @@ and a bridge belongs with the game's mod, not in an elevated input daemon.
 | Launch, intro screens, anything before the mod loads | game-input (`set_keys`, `mouse_click`) from a captured frame |
 | Menus and play once the bridge answers | the bridge |
 | Check that it *looks* right (scale, facing, layering) | game-input `capture`, and read the result |
-| A game the mod cannot reach, or an online game | game-input only, with `presence` left on `focus` or `strict` |
+| A game the mod cannot reach, or an online game | game-input only; read the `presence` warnings and wait for the user yourself |
 
 Treat the bridge as a second oracle next to screenshots: when they disagree,
 believe neither until you know why (the screenshot oracle can be stale, see the

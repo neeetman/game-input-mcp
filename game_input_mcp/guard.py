@@ -87,53 +87,19 @@ def gate_foreground(
     )
 
 
-PRESENCE_OPS = ("focus", "inject")
-
-
-def gate_presence(reading: dict, op: str) -> Outcome:
-    """Apply the presence policy to an operation.
-
-    op "focus": would change the foreground window (the documented incident:
-    stealing focus from a typing human). op "inject": injection while the
-    target is already foreground.
-
-        policy  focus            inject
-        off     allow            allow
-        warn    warn             warn
-        focus   USER_PRESENT     warn
-        strict  USER_PRESENT     USER_PRESENT
-
-    There is intentionally no per-call way to relax this.
-    """
-    if op not in PRESENCE_OPS:
-        raise ValueError(f"unknown presence op: {op}")
-    policy = reading["policy"]
-    if policy == "off" or reading["state"] != "present":
+def presence_outcome(reading: dict) -> Outcome:
+    """Report a user who is active at this machine as a warning. It never stops
+    or delays input: whether the agent should wait is the agent's call, informed
+    by the warning and by `presence` in get_target_info."""
+    if reading["policy"] == "off" or reading["state"] != "present":
         return Outcome()
-    idle = reading["user_idle_ms"]
-    details = {
-        "user_idle_ms": idle,
-        "threshold_ms": reading["threshold_ms"],
-        "policy": policy,
-        "op": op,
-        "retry_after_ms": max(0, reading["threshold_ms"] - int(idle or 0)),
-    }
-    refuse = policy == "strict" or (policy == "focus" and op == "focus")
-    if refuse:
-        return Outcome(
-            error=error_response(
-                "USER_PRESENT",
-                "A user is active at this machine; input was not sent. Wait until they are idle.",
-                retryable=True,
-                **details,
-            )
-        )
     return Outcome(
         warnings=[
             warning(
                 "USER_PRESENT",
                 "A user is active at this machine; their input may collide with the agent's",
-                **details,
+                user_idle_ms=reading["user_idle_ms"],
+                threshold_ms=reading["threshold_ms"],
             )
         ]
     )
