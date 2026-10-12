@@ -644,19 +644,36 @@ def _send_inputs(inputs: list[INPUT]) -> int:
         return user32.SendInput(len(inputs), arr, ctypes.sizeof(INPUT))
 
 
-_SCREEN_W = None
-_SCREEN_H = None
+# Absolute moves are normalized over the virtual desktop, so they must carry
+# MOUSEEVENTF_VIRTUALDESK: without it 0..65535 maps to the PRIMARY monitor only and every
+# point on a secondary (or a desktop whose layout changed) lands proportionally off.
+MOUSEEVENTF_VIRTUALDESK = 0x4000
+
+# UE Slate (and most retained-mode game UIs) hit-test the widget under the cursor on the
+# mouse-move it processes in a frame; a button press that arrives in the SAME SendInput batch
+# as the move is routed to whatever was hovered before the jump, so the click lands on the old
+# position (Witchspire 2026-10-12: the early-access notice never closed on replay, while the
+# same click worked once the cursor already rested on the button). Move, let a few frames
+# pass, then press, hold briefly, release.
+MOVE_SETTLE_S = 0.06
+CLICK_HOLD_S = 0.04
 
 
 def _virtual_screen_size() -> tuple[int, int]:
-    """Width/height of the virtual screen spanning all monitors."""
-    global _SCREEN_W, _SCREEN_H
-    if _SCREEN_W is None:
-        SM_CXVIRTUALSCREEN = 78
-        SM_CYVIRTUALSCREEN = 79
-        _SCREEN_W = user32.GetSystemMetrics(SM_CXVIRTUALSCREEN)
-        _SCREEN_H = user32.GetSystemMetrics(SM_CYVIRTUALSCREEN)
-    return _SCREEN_W, _SCREEN_H
+    """Width/height of the virtual screen spanning all monitors. Read on every call: a
+    cached value goes stale when the resolution/layout changes (remote-desktop sessions
+    resize the desktop) and would scale every absolute move."""
+    SM_CXVIRTUALSCREEN = 78
+    SM_CYVIRTUALSCREEN = 79
+    return user32.GetSystemMetrics(SM_CXVIRTUALSCREEN), user32.GetSystemMetrics(SM_CYVIRTUALSCREEN)
+
+
+def _abs_input(ax: int, ay: int, flags: int, data: int = 0) -> "INPUT":
+    return INPUT(type=INPUT_MOUSE, u=_INPUTunion(mi=MOUSEINPUT(
+        dx=ax, dy=ay, mouseData=data,
+        dwFlags=flags | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK,
+        time=0, dwExtraInfo=None
+    )))
 
 
 def _virtual_screen_origin() -> tuple[int, int]:
@@ -693,29 +710,17 @@ def send_mouse_click(
     }[button]
 
     ax, ay = _screen_to_absolute(screen_x, screen_y)
-
-    inputs = []
-    # Move
-    inputs.append(INPUT(type=INPUT_MOUSE, u=_INPUTunion(mi=MOUSEINPUT(
-        dx=ax, dy=ay, mouseData=0,
-        dwFlags=MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE,
-        time=0, dwExtraInfo=None
-    ))))
-    # Click(s)
-    for _ in range(clicks):
-        inputs.append(INPUT(type=INPUT_MOUSE, u=_INPUTunion(mi=MOUSEINPUT(
-            dx=ax, dy=ay, mouseData=0,
-            dwFlags=flags_down | MOUSEEVENTF_ABSOLUTE,
-            time=0, dwExtraInfo=None
-        ))))
-        inputs.append(INPUT(type=INPUT_MOUSE, u=_INPUTunion(mi=MOUSEINPUT(
-            dx=ax, dy=ay, mouseData=0,
-            dwFlags=flags_up | MOUSEEVENTF_ABSOLUTE,
-            time=0, dwExtraInfo=None
-        ))))
-
-    sent = _send_inputs(inputs)
-    return sent == len(inputs)
+    sent = expected = 0
+    # Move first and let the UI process it (hover/hit-test) before the press.
+    sent += _send_inputs([_abs_input(ax, ay, MOUSEEVENTF_MOVE)]); expected += 1
+    time.sleep(MOVE_SETTLE_S)
+    for i in range(clicks):
+        sent += _send_inputs([_abs_input(ax, ay, flags_down)]); expected += 1
+        time.sleep(CLICK_HOLD_S)
+        sent += _send_inputs([_abs_input(ax, ay, flags_up)]); expected += 1
+        if i + 1 < clicks:
+            time.sleep(CLICK_HOLD_S)
+    return sent == expected
 
 
 def send_mouse_drag(
@@ -729,56 +734,32 @@ def send_mouse_drag(
 
     fx, fy = from_screen
     tx, ty = to_screen
+    sent = expected = 0
 
-    inputs = []
     ax, ay = _screen_to_absolute(fx, fy)
-    inputs.append(INPUT(type=INPUT_MOUSE, u=_INPUTunion(mi=MOUSEINPUT(
-        dx=ax, dy=ay, mouseData=0,
-        dwFlags=MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE,
-        time=0, dwExtraInfo=None
-    ))))
-    inputs.append(INPUT(type=INPUT_MOUSE, u=_INPUTunion(mi=MOUSEINPUT(
-        dx=ax, dy=ay, mouseData=0,
-        dwFlags=flags_down | MOUSEEVENTF_ABSOLUTE,
-        time=0, dwExtraInfo=None
-    ))))
+    sent += _send_inputs([_abs_input(ax, ay, MOUSEEVENTF_MOVE)]); expected += 1
+    time.sleep(MOVE_SETTLE_S)
+    sent += _send_inputs([_abs_input(ax, ay, flags_down)]); expected += 1
+    time.sleep(CLICK_HOLD_S)
     for i in range(1, steps + 1):
         ix = fx + (tx - fx) * i // steps
         iy = fy + (ty - fy) * i // steps
         ax, ay = _screen_to_absolute(ix, iy)
-        inputs.append(INPUT(type=INPUT_MOUSE, u=_INPUTunion(mi=MOUSEINPUT(
-            dx=ax, dy=ay, mouseData=0,
-            dwFlags=MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE,
-            time=0, dwExtraInfo=None
-        ))))
+        sent += _send_inputs([_abs_input(ax, ay, MOUSEEVENTF_MOVE)]); expected += 1
+        time.sleep(0.01)
     ax, ay = _screen_to_absolute(tx, ty)
-    inputs.append(INPUT(type=INPUT_MOUSE, u=_INPUTunion(mi=MOUSEINPUT(
-        dx=ax, dy=ay, mouseData=0,
-        dwFlags=flags_up | MOUSEEVENTF_ABSOLUTE,
-        time=0, dwExtraInfo=None
-    ))))
-
-    sent = _send_inputs(inputs)
-    return sent == len(inputs)
+    time.sleep(MOVE_SETTLE_S)
+    sent += _send_inputs([_abs_input(ax, ay, flags_up)]); expected += 1
+    return sent == expected
 
 
 def send_scroll(screen_x: int, screen_y: int, delta: int) -> bool:
     """delta > 0 scrolls up, < 0 scrolls down. 120 = one notch."""
     ax, ay = _screen_to_absolute(screen_x, screen_y)
-    inputs = [
-        INPUT(type=INPUT_MOUSE, u=_INPUTunion(mi=MOUSEINPUT(
-            dx=ax, dy=ay, mouseData=0,
-            dwFlags=MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE,
-            time=0, dwExtraInfo=None
-        ))),
-        INPUT(type=INPUT_MOUSE, u=_INPUTunion(mi=MOUSEINPUT(
-            dx=ax, dy=ay, mouseData=delta,
-            dwFlags=MOUSEEVENTF_WHEEL | MOUSEEVENTF_ABSOLUTE,
-            time=0, dwExtraInfo=None
-        ))),
-    ]
-    sent = _send_inputs(inputs)
-    return sent == len(inputs)
+    sent = _send_inputs([_abs_input(ax, ay, MOUSEEVENTF_MOVE)])
+    time.sleep(MOVE_SETTLE_S)
+    sent += _send_inputs([_abs_input(ax, ay, MOUSEEVENTF_WHEEL, delta)])
+    return sent == 2
 
 
 def send_keys(keys: str) -> bool:
