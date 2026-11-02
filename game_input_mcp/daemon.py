@@ -1030,9 +1030,53 @@ def _setup_logging() -> None:
     )
 
 
+_STARTED_AT = time.time()
+
+
+def _h_daemon_status(p: dict) -> dict:
+    """Who serves the pipe and what it holds, so a restart can see what it would break."""
+    live = SESSIONS.live_records()
+    return ok_response(
+        pid=os.getpid(),
+        started_at=_STARTED_AT,
+        sessions=len(live),
+        held=sum(len(r.held_keys) + len(r.held_buttons) for r in live),
+        timelines_running=len(_TIMELINES),
+    )
+
+
+HANDLERS["daemon_status"] = _h_daemon_status
+
+
+def _single_instance():
+    """One daemon per user. Two daemons would both serve the same pipe name (pipe instances
+    are unlimited), so a client's calls would land on either and its session would come and
+    go. Returns the held mutex handle, or None when another daemon already owns it."""
+    import win32api
+    import win32event
+    import winerror
+
+    import pywintypes
+
+    try:
+        handle = win32event.CreateMutex(None, True, r"Local\game-input-daemon." + ipc.current_user_sid_str())
+    except pywintypes.error as exc:
+        if exc.winerror == winerror.ERROR_ACCESS_DENIED:  # owned by an elevated daemon
+            return None
+        raise
+    if win32api.GetLastError() == winerror.ERROR_ALREADY_EXISTS:
+        win32api.CloseHandle(handle)
+        return None
+    return handle
+
+
 def main() -> int:
     global CONFIG
     _setup_logging()
+    instance = _single_instance()  # noqa: F841 - held for the process lifetime
+    if instance is None:
+        log.info("another daemon already serves %s; exiting", ipc.pipe_name())
+        return 0
     CONFIG = config_module.load()
     log.info("starting; sid=%s pipe=%s", ipc.current_user_sid_str(), ipc.pipe_name())
     log.info("config: %s", CONFIG)

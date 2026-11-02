@@ -9,7 +9,7 @@ Usage:
     python -m game_input_mcp.install              # install + start now
     python -m game_input_mcp.install --uninstall  # remove
     python -m game_input_mcp.install --status     # check task state
-    python -m game_input_mcp.install --restart    # stop + start now
+    python -m game_input_mcp.install --restart    # stop + start now (refused while input sessions are live; --force)
 
 Install/uninstall require an elevated shell — we just check IsUserAnAdmin()
 and refuse with a clear message rather than trying to self-elevate, because
@@ -100,9 +100,28 @@ def status() -> None:
         print(f"[info] task '{TASK_NAME}' not installed.")
 
 
-def restart() -> None:
+def live_input() -> dict | None:
+    """The running daemon's own account of live sessions (None: no daemon, or one too old to say)."""
+    from .client import Client
+
+    try:
+        return Client().call("daemon_status")
+    except Exception:  # noqa: BLE001 - no daemon / pre-daemon_status daemon: nothing to protect
+        return None
+
+
+def restart(force: bool = False) -> None:
     if not _is_admin():
         raise SystemExit("restart requires elevation (see install message).")
+    # A restart drops every input session: a capture driven by another agent loses its
+    # input mid-run (Hellblade 2, 2026-11-02, 12 s into a roam). Refuse while any is live.
+    status = live_input()
+    if status and status.get("sessions") and not force:
+        raise SystemExit(
+            f"refusing to restart: daemon pid {status.get('pid')} has {status['sessions']} live input "
+            f"session(s), {status.get('timelines_running', 0)} timeline(s) running. Wait for them to "
+            "close, or pass --force if you are sure nobody is driving a game."
+        )
     _schtasks("/End", "/TN", TASK_NAME, check=False)
     _schtasks("/Run", "/TN", TASK_NAME)
     print(f"[ok] task '{TASK_NAME}' restarted.")
@@ -137,6 +156,7 @@ def main() -> int:
         action="append",
         help="write a daemon setting to config.json (e.g. presence=strict); needs --restart to take effect",
     )
+    ap.add_argument("--force", action="store_true", help="--restart even while input sessions are live")
     args = ap.parse_args()
 
     if args.set:
@@ -146,7 +166,7 @@ def main() -> int:
     elif args.status:
         status()
     elif args.restart:
-        restart()
+        restart(force=args.force)
     else:
         install()
     return 0

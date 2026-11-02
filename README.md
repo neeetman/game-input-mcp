@@ -127,6 +127,18 @@ closed, including `activate=False`:
   taken before the window moved, resized or changed DPI; capture again.
 - Key releases (`key_up`) are never blocked.
 
+## Daemon lifecycle
+
+One daemon serves each user: a second `game_input_mcp.daemon` finds the per-user mutex
+taken and exits instead of serving the same pipe name next to the first (clients would
+otherwise land on either, and their sessions would come and go). Every MCP server
+process is only a client of that daemon; any number of them can run.
+`daemon_status` reports the serving pid, start time, live sessions, held inputs and
+running timelines. `install --restart` refuses while any session is live (a restart
+drops every session, so another agent's capture loses its input mid-run); `--force`
+overrides. Clients must still treat `SESSION_NOT_FOUND` and a broken pipe as "open a
+new session", since a crash or a forced restart can always happen.
+
 ## User Presence
 
 `get_target_info` returns `presence` (`state`: `present` / `away` / `unknown`,
