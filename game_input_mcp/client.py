@@ -129,8 +129,15 @@ class _PipeTransport:
         k.WaitNamedPipeW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD]
         self._k = k
 
+    #: A missing pipe is retried this long before DaemonUnavailable: a daemon older than the
+    #: create-before-handoff server briefly had no listening instance between two calls, and a
+    #: restarting daemon needs a moment to create it.
+    NOT_FOUND_GRACE_S = 3.0
+
     def open(self, name: str):
-        for attempt in range(3):
+        busy = 0
+        deadline = time.monotonic() + self.NOT_FOUND_GRACE_S
+        while True:
             handle = self._k.CreateFileW(
                 name, _GENERIC_READ | _GENERIC_WRITE, 0, None, _OPEN_EXISTING, 0, None
             )
@@ -138,14 +145,19 @@ class _PipeTransport:
                 return handle
             err = ctypes.get_last_error()
             if err == _ERROR_FILE_NOT_FOUND:
+                if time.monotonic() < deadline:
+                    time.sleep(0.05)
+                    continue
                 raise DaemonUnavailable(
                     f"daemon pipe {name} not found. Run: python -m game_input_mcp.install"
                 )
-            if err == _ERROR_PIPE_BUSY and attempt < 2:
+            if err == _ERROR_PIPE_BUSY and busy < 2:
+                busy += 1
                 self._k.WaitNamedPipeW(name, 1000)
                 continue
+            if err == _ERROR_PIPE_BUSY:
+                raise DaemonUnavailable(f"pipe {name} busy after retries")
             raise ctypes.WinError(err)
-        raise DaemonUnavailable(f"pipe {name} busy after retries")
 
     def wait_readable(self, handle, timeout_s: float) -> bool:
         """True once the pipe has bytes (or is closed, so read() can report it),

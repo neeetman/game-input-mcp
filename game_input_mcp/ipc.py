@@ -180,7 +180,10 @@ class Client:
         raise RuntimeError(resp.get("error") or "daemon returned error without message")
 
     def _connect(self):
-        for attempt in range(3):
+        # A missing pipe is retried briefly (see client._PipeTransport.NOT_FOUND_GRACE_S).
+        deadline = time.monotonic() + 3.0
+        attempt = 0
+        while True:
             try:
                 return win32file.CreateFile(
                     self._name,
@@ -189,16 +192,21 @@ class Client:
                     win32file.OPEN_EXISTING, 0, None,
                 )
             except pywintypes.error as e:
+                if e.winerror == winerror.ERROR_FILE_NOT_FOUND and time.monotonic() < deadline:
+                    time.sleep(0.05)
+                    continue
                 if e.winerror == winerror.ERROR_FILE_NOT_FOUND:
                     raise DaemonUnavailable(
                         f"daemon pipe {self._name} not found. "
                         f"Run: python -m game_input_mcp.install"
                     ) from e
                 if e.winerror == winerror.ERROR_PIPE_BUSY and attempt < 2:
+                    attempt += 1
                     win32pipe.WaitNamedPipe(self._name, 1000)
                     continue
+                if e.winerror == winerror.ERROR_PIPE_BUSY:
+                    raise RuntimeError(f"pipe {self._name} busy after retries") from e
                 raise
-        raise RuntimeError(f"pipe {self._name} busy after retries")
 
 
 # === Server (used by daemon.py) ============================================
@@ -234,8 +242,8 @@ class Server:
         the DACL — built in install.py / daemon.py so this module stays
         policy-free.
         """
-        while not self._stop.is_set():
-            pipe = win32pipe.CreateNamedPipe(
+        def listening_instance():
+            return win32pipe.CreateNamedPipe(
                 self._name,
                 win32pipe.PIPE_ACCESS_DUPLEX,
                 win32pipe.PIPE_TYPE_BYTE | win32pipe.PIPE_READMODE_BYTE | win32pipe.PIPE_WAIT,
@@ -244,14 +252,24 @@ class Server:
                 0,
                 security_attributes,
             )
+
+        # The next listening instance is created BEFORE the connected one goes to its
+        # worker. Created after (as before), a fast request could finish and close the
+        # only instance first: for that moment the pipe name did not exist, and a client
+        # opening it got ERROR_FILE_NOT_FOUND ("daemon not found") from a running daemon.
+        # Rapid back-to-back calls (a roam's look calibration) hit it mid-capture.
+        pipe = listening_instance()
+        while not self._stop.is_set():
             try:
                 win32pipe.ConnectNamedPipe(pipe, None)
             except pywintypes.error:
                 win32file.CloseHandle(pipe)
+                pipe = listening_instance()
                 continue
-
-            t = threading.Thread(target=self._handle_one, args=(pipe,), daemon=True)
+            connected, pipe = pipe, listening_instance()
+            t = threading.Thread(target=self._handle_one, args=(connected,), daemon=True)
             t.start()
+        win32file.CloseHandle(pipe)
 
     def _handle_one(self, pipe) -> None:
         try:
