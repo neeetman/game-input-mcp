@@ -610,10 +610,32 @@ def _resolve_session(p: dict) -> tuple[SessionRecord | None, dict | None]:
     return record, None
 
 
+#: acquire_once sessions take the foreground back this many times before an injection fails.
+REFOCUS_ATTEMPTS = 3
+
+
+def _refocus(record: SessionRecord) -> dict:
+    """Bring the session's window back to the front; truth is GetForegroundWindow."""
+    last: dict = {}
+    for attempt in range(1, REFOCUS_ATTEMPTS + 1):
+        last = win32.focus_window_detailed(record.pid)
+        if last.get("success") and win32.get_foreground_hwnd() == record.hwnd:
+            return {"success": True, "attempts": attempt, "path": last.get("path")}
+    return {"success": False, "attempts": REFOCUS_ATTEMPTS, "focus": last}
+
+
 def _ensure_foreground(record: SessionRecord) -> dict | None:
-    """Apply the session focus policy before an injection. acquire_each
-    re-focuses (v1 behaviour); the other policies only verify and fail closed,
-    releasing everything held when the target lost the foreground."""
+    """Apply the session focus policy before an injection.
+
+    acquire_each re-focuses before every injection (v1 behaviour). acquire_once
+    (the default) takes a lost foreground back instead of failing: whatever the
+    session held is released first (those edges land on the window that took the
+    foreground, where a stray key-up is harmless), the target is focused again,
+    and the same keys and buttons are pressed again in it, so the caller's view
+    of the held state stays true and the injection goes on. Only a foreground
+    Windows refuses to hand back fails, as FOCUS_LOST (retryable). "none" never
+    takes the foreground: it verifies, releases and fails closed as before.
+    Whether a person uses the machine plays no part in any of this."""
     if record.focus_policy == "acquire_each":
         if not win32.focus_window_detailed(record.pid).get("success"):
             return error_response(
@@ -625,16 +647,30 @@ def _ensure_foreground(record: SessionRecord) -> dict | None:
         return None
     foreground = win32.get_foreground_hwnd()
     if foreground != record.hwnd:
+        held = [
+            Edge(e.kind, e.name, True, stroke=e.stroke, button=e.button)
+            for e in plan_release(record)
+        ]
         released = _release_session(record, "focus_lost")
-        record.status = "paused"
-        record.reason = "focus_lost"
-        return error_response(
-            "FOCUS_LOST",
-            "Target window is not foreground; held input was released",
-            retryable=True,
-            session_id=record.session_id,
-            foreground_hwnd=foreground,
-            released=released,
+        refocus = _refocus(record) if record.focus_policy != "none" else None
+        if not (refocus and refocus["success"]):
+            record.status = "paused"
+            record.reason = "focus_lost"
+            return error_response(
+                "FOCUS_LOST",
+                "Target window is not foreground; held input was released",
+                retryable=True,
+                session_id=record.session_id,
+                foreground_hwnd=foreground,
+                released=released,
+                refocus=refocus,
+            )
+        if held:
+            win32.send_edges(held)
+            apply_edges(record, held, now=SESSIONS.now())
+        log.info(
+            "session %s took the foreground back from hwnd %s (%s); re-held %s",
+            record.session_id, foreground, refocus, [e.name for e in held],
         )
     if record.status == "paused":
         record.status = "active"
@@ -807,8 +843,14 @@ def _h_run_timeline(p: dict) -> dict:
             record.last_heartbeat = now
 
         foreground_ok = None
-        if record.focus_policy != "acquire_each":
+        if record.focus_policy == "none":
             foreground_ok = lambda: win32.get_foreground_hwnd() == record.hwnd  # noqa: E731
+        elif record.focus_policy != "acquire_each":
+            # acquire_once: a lost foreground is taken back between batches (held input is
+            # released and pressed again in the target), so the timeline goes on.
+            foreground_ok = lambda: (  # noqa: E731
+                win32.get_foreground_hwnd() == record.hwnd or _ensure_foreground(record) is None
+            )
 
         runner = TimelineRunner(
             send=win32.send_edges,
@@ -988,9 +1030,53 @@ def _setup_logging() -> None:
     )
 
 
+_STARTED_AT = time.time()
+
+
+def _h_daemon_status(p: dict) -> dict:
+    """Who serves the pipe and what it holds, so a restart can see what it would break."""
+    live = SESSIONS.live_records()
+    return ok_response(
+        pid=os.getpid(),
+        started_at=_STARTED_AT,
+        sessions=len(live),
+        held=sum(len(r.held_keys) + len(r.held_buttons) for r in live),
+        timelines_running=len(_TIMELINES),
+    )
+
+
+HANDLERS["daemon_status"] = _h_daemon_status
+
+
+def _single_instance():
+    """One daemon per user. Two daemons would both serve the same pipe name (pipe instances
+    are unlimited), so a client's calls would land on either and its session would come and
+    go. Returns the held mutex handle, or None when another daemon already owns it."""
+    import win32api
+    import win32event
+    import winerror
+
+    import pywintypes
+
+    try:
+        handle = win32event.CreateMutex(None, True, r"Local\game-input-daemon." + ipc.current_user_sid_str())
+    except pywintypes.error as exc:
+        if exc.winerror == winerror.ERROR_ACCESS_DENIED:  # owned by an elevated daemon
+            return None
+        raise
+    if win32api.GetLastError() == winerror.ERROR_ALREADY_EXISTS:
+        win32api.CloseHandle(handle)
+        return None
+    return handle
+
+
 def main() -> int:
     global CONFIG
     _setup_logging()
+    instance = _single_instance()  # noqa: F841 - held for the process lifetime
+    if instance is None:
+        log.info("another daemon already serves %s; exiting", ipc.pipe_name())
+        return 0
     CONFIG = config_module.load()
     log.info("starting; sid=%s pipe=%s", ipc.current_user_sid_str(), ipc.pipe_name())
     log.info("config: %s", CONFIG)

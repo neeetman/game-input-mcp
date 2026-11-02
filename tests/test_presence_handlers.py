@@ -16,6 +16,12 @@ def _policy(monkeypatch, policy: str) -> None:
     monkeypatch.setattr(daemon, "CONFIG", dataclasses.replace(config_module.Config(), presence=policy))
 
 
+@pytest.fixture(autouse=True)
+def _warn_policy(monkeypatch) -> None:
+    # The default is "off" (nothing reported); these tests are about what "warn" reports.
+    _policy(monkeypatch, "warn")
+
+
 def _user_active(ticks, ms_ago: int = 5000) -> None:
     ticks.last_input = ticks.now - ms_ago
 
