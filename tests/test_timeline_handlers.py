@@ -103,16 +103,24 @@ def test_run_timeline_rejects_invalid_timeline_without_sending(tenv) -> None:
     assert tenv.sent == []
 
 
-def test_run_timeline_focus_lost_releases_everything(tenv, monkeypatch) -> None:
+def test_run_timeline_takes_a_lost_foreground_back_between_batches(tenv, monkeypatch) -> None:
     sid = _open(tenv)
     daemon._h_set_keys({"session_id": sid, "down": ["lshift"]})
     original = daemon.win32.send_edges
+    lost = []
 
-    def lose_focus_after_first(edges):
-        tenv.foreground["hwnd"] = 42
+    def lose_focus_once(edges):
+        if not lost:
+            lost.append(1)
+            tenv.foreground["hwnd"] = 42
         return original(edges)
 
-    monkeypatch.setattr(daemon.win32, "send_edges", lose_focus_after_first)
+    monkeypatch.setattr(daemon.win32, "send_edges", lose_focus_once)
+    monkeypatch.setattr(
+        daemon.win32,
+        "focus_window_detailed",
+        lambda pid: tenv.focus_calls.append(pid) or tenv.foreground.update(hwnd=1) or {"success": True},
+    )
 
     result = daemon._h_run_timeline(
         {
@@ -122,10 +130,34 @@ def test_run_timeline_focus_lost_releases_everything(tenv, monkeypatch) -> None:
         }
     )
 
-    assert result["success"] is False
+    assert result["success"] is True and result["stopped_reason"] == "completed"
+    assert len(result["batches"]) == 2
+    assert sorted(result["held_keys"]) == ["lshift"]
+    assert daemon._h_session_state({"session_id": sid})["status"] == "active"
+
+
+def test_run_timeline_stops_when_the_foreground_cannot_be_taken_back(tenv, monkeypatch) -> None:
+    sid = _open(tenv)
+    daemon._h_set_keys({"session_id": sid, "down": ["lshift"]})
+    original = daemon.win32.send_edges
+
+    def lose_focus_after_first(edges):
+        tenv.foreground["hwnd"] = 42
+        return original(edges)
+
+    monkeypatch.setattr(daemon.win32, "send_edges", lose_focus_after_first)
+    monkeypatch.setattr(daemon.win32, "focus_window_detailed", lambda pid: {"success": False})
+
+    result = daemon._h_run_timeline(
+        {
+            "session_id": sid,
+            "events": [{"t_ms": 0, "op": "down", "key": "w"}, {"t_ms": 100, "op": "up", "key": "w"}],
+            "total_ms": 200,
+        }
+    )
+
     assert result["error_code"] == "FOCUS_LOST"
     assert result["details"]["stopped_reason"] == "focus_lost"
-    assert sorted(result["details"]["released_on_exit"]) == ["lshift", "w"]
     assert len(result["details"]["batches"]) == 1
     assert daemon._h_session_state({"session_id": sid})["status"] == "paused"
 

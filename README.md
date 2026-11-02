@@ -138,7 +138,8 @@ Presence is information only. **It never makes the daemon skip, delay or stop
 input**: not a focus change, not a one-shot tool, not a running session or
 timeline. While a user is active, results carry
 `warnings: [{"code": "USER_PRESENT", ...}]` (`user_idle_ms`, `threshold_ms`) so the
-agent can decide for itself whether to wait. `presence=off` removes the warnings.
+agent can decide for itself whether to wait. The default is `presence=off`: no
+warnings at all (the reading in `get_target_info` stays); `presence=warn` adds them.
 Older `presence=focus` / `strict` settings, which used to refuse input
 (`USER_PRESENT`, `USER_TOOK_OVER`), are read as `warn`. Gamepad input is not
 visible to this signal, and input from other injectors counts as the user's.
@@ -167,7 +168,7 @@ python -m game_input_mcp.install --restart
 | --- | --- | --- |
 | `foreground_guard` | `strict`, `warn`, `off` | `strict` |
 | `frame_geometry_check` | `strict`, `warn`, `off` | `strict` |
-| `presence` | `off`, `warn` | `warn` |
+| `presence` | `off`, `warn` | `off` |
 | `presence_idle_s` | seconds | `30` |
 | `capture_backend` | `auto`, `dxcam`, `mss`, `pillow`, `wgc` | `auto` |
 | `capture_timeout_ms` | ms | `1500` |
@@ -219,11 +220,16 @@ Safety contract:
 
 - The daemon knows exactly what each session holds and releases all of it when
   the **lease** expires without a heartbeat, when any key is held longer than
-  `max_hold_ms`, when the session is closed, when the daemon shuts down, or
-  when the target window loses foreground (`FOCUS_LOST`, session `paused`).
-- `focus="acquire_once"` (default) focuses once at open and never re-focuses,
-  so no Alt self-press leaks into the game mid-hold. `acquire_each` keeps the
-  one-shot behaviour; `none` never focuses and only verifies.
+  `max_hold_ms`, when the session is closed or when the daemon shuts down.
+- A lost foreground does not end input. With `focus="acquire_once"` (default)
+  the session focuses at open, and when another window has taken the
+  foreground before an injection it releases what it held (those edges reach
+  the other window, where a stray key-up is harmless), focuses the target
+  again (up to 3 tries), presses the same keys and buttons again in it and
+  sends the injection. Only a foreground Windows will not hand back fails, as
+  `FOCUS_LOST` (retryable, session `paused`, `details.refocus` says why).
+  `acquire_each` focuses before every injection; `none` never focuses: it
+  verifies, releases and fails with `FOCUS_LOST`.
 - A second session on the same window is refused (`SESSION_EXISTS`) unless
   `takeover=true`, which releases the previous session first.
 - Every response carries `qpc_ns` (injection timestamp) and the resulting
@@ -261,9 +267,11 @@ run_timeline(session_id, total_ms=2500, events=[
   `up` for something not down, a `down` for something already down, and any
   key still down at the end unless `allow_dangling=true`.
 - The request blocks until `total_ms` elapses. `abort_timeline` from another
-  connection stops it (`ABORTED`); losing foreground stops it (`FOCUS_LOST`).
-  Both release everything the session holds and report the partial batch log
-  plus `pending_indices`.
+  connection stops it (`ABORTED`). A lost foreground is taken back between
+  batches like any session injection (held input released and pressed again
+  in the target) and the timeline goes on; only a foreground that cannot be
+  taken back stops it (`FOCUS_LOST`). A stop releases everything the session
+  holds and reports the partial batch log plus `pending_indices`.
 
 ## Relative Mouse (camera look)
 

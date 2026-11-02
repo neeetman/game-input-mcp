@@ -12,7 +12,7 @@ def test_defaults_match_the_design_spec() -> None:
 
     assert cfg.foreground_guard == "strict"
     assert cfg.frame_geometry_check == "strict"
-    assert cfg.presence == "warn"
+    assert cfg.presence == "off"
     assert cfg.presence_idle_s == 30.0
     assert cfg.capture_timeout_ms == 1500
     assert cfg.allow_window_mutation is False

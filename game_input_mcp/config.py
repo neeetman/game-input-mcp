@@ -27,7 +27,7 @@ CAPTURE_BACKENDS = ("auto", "dxcam", "mss", "pillow", "wgc")
 class Config:
     foreground_guard: str = "strict"
     frame_geometry_check: str = "strict"
-    presence: str = "warn"
+    presence: str = "off"
     presence_idle_s: float = 30.0
     capture_backend: str = "auto"
     capture_timeout_ms: int = 1500

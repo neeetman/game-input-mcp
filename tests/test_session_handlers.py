@@ -190,21 +190,55 @@ def test_set_keys_invalid_key_sends_nothing(env, monkeypatch) -> None:
     assert daemon._h_session_state({"session_id": sid})["held_keys"] == []
 
 
-def test_set_keys_releases_everything_on_focus_loss(env) -> None:
+def test_set_keys_takes_a_lost_foreground_back_and_keeps_going(env, monkeypatch) -> None:
     sid = _open(env)
     daemon._h_set_keys({"session_id": sid, "down": ["w"], "buttons_down": ["left"]})
     env.foreground["hwnd"] = 42
+    monkeypatch.setattr(
+        daemon.win32,
+        "focus_window_detailed",
+        lambda pid: env.focus_calls.append(pid) or env.foreground.update(hwnd=1) or {"success": True, "hwnd": 1},
+    )
+
+    result = daemon._h_set_keys({"session_id": sid, "down": ["a"]})
+
+    assert result["success"] is True
+    assert len(env.focus_calls) == 2  # open, then the refocus
+    # held input released where it went astray, pressed again in the target, then the new key
+    assert sorted(env.sent[-3]) == [("button", "left", False), ("key", "w", False)]
+    assert sorted(env.sent[-2]) == [("button", "left", True), ("key", "w", True)]
+    assert env.sent[-1] == [("key", "a", True)]
+    state = daemon._h_session_state({"session_id": sid})
+    assert state["status"] == "active" and state["held_keys"] == ["a", "w"]
+
+
+def test_set_keys_fails_closed_only_when_the_foreground_cannot_be_taken_back(env, monkeypatch) -> None:
+    sid = _open(env)
+    daemon._h_set_keys({"session_id": sid, "down": ["w"], "buttons_down": ["left"]})
+    env.foreground["hwnd"] = 42
+    monkeypatch.setattr(
+        daemon.win32, "focus_window_detailed", lambda pid: env.focus_calls.append(pid) or {"success": False}
+    )
 
     result = daemon._h_set_keys({"session_id": sid, "down": ["a"]})
 
     assert result["error_code"] == "FOCUS_LOST"
     assert result["retryable"] is True
     assert sorted(result["details"]["released"]) == ["left", "w"]
-    assert result["details"]["foreground_hwnd"] == 42
-    assert sorted(env.sent[-1]) == [("button", "left", False), ("key", "w", False)]
+    assert result["details"]["refocus"]["attempts"] == daemon.REFOCUS_ATTEMPTS
+    assert len(env.focus_calls) == 1 + daemon.REFOCUS_ATTEMPTS
     state = daemon._h_session_state({"session_id": sid})
     assert state["status"] == "paused" and state["held_keys"] == []
-    assert len(env.focus_calls) == 1  # never re-focused after open
+
+
+def test_focus_none_session_never_takes_the_foreground(env) -> None:
+    sid = _open(env, focus="none")
+    env.foreground["hwnd"] = 42
+
+    result = daemon._h_set_keys({"session_id": sid, "down": ["a"]})
+
+    assert result["error_code"] == "FOCUS_LOST" and result["details"]["refocus"] is None
+    assert env.focus_calls == []
 
 
 def test_paused_session_resumes_when_target_is_foreground_again(env) -> None:
