@@ -10,7 +10,9 @@ import contextlib
 import ctypes
 from ctypes import wintypes
 from dataclasses import dataclass
+import subprocess
 import time
+from typing import Sequence
 
 from .input.keys import KeyStroke, resolve_key
 
@@ -136,6 +138,113 @@ kernel32.CloseHandle.restype = wintypes.BOOL
 GA_ROOT = 2
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 MONITOR_DEFAULTTONEAREST = 2
+UOI_NAME = 2
+INTERACTIVE_DESKTOP = r"WinSta0\Default"
+DETACHED_PROCESS = 0x00000008
+CREATE_NEW_PROCESS_GROUP = 0x00000200
+CREATE_BREAKAWAY_FROM_JOB = 0x01000000
+
+
+class STARTUPINFOW(ctypes.Structure):
+    _fields_ = [
+        ("cb", wintypes.DWORD),
+        ("lpReserved", wintypes.LPWSTR),
+        ("lpDesktop", wintypes.LPWSTR),
+        ("lpTitle", wintypes.LPWSTR),
+        ("dwX", wintypes.DWORD),
+        ("dwY", wintypes.DWORD),
+        ("dwXSize", wintypes.DWORD),
+        ("dwYSize", wintypes.DWORD),
+        ("dwXCountChars", wintypes.DWORD),
+        ("dwYCountChars", wintypes.DWORD),
+        ("dwFillAttribute", wintypes.DWORD),
+        ("dwFlags", wintypes.DWORD),
+        ("wShowWindow", wintypes.WORD),
+        ("cbReserved2", wintypes.WORD),
+        ("lpReserved2", ctypes.c_void_p),
+        ("hStdInput", wintypes.HANDLE),
+        ("hStdOutput", wintypes.HANDLE),
+        ("hStdError", wintypes.HANDLE),
+    ]
+
+
+class PROCESS_INFORMATION(ctypes.Structure):
+    _fields_ = [
+        ("hProcess", wintypes.HANDLE),
+        ("hThread", wintypes.HANDLE),
+        ("dwProcessId", wintypes.DWORD),
+        ("dwThreadId", wintypes.DWORD),
+    ]
+
+
+user32.GetThreadDesktop.argtypes = [wintypes.DWORD]
+user32.GetThreadDesktop.restype = wintypes.HANDLE
+user32.GetUserObjectInformationW.argtypes = [
+    wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD, ctypes.POINTER(wintypes.DWORD),
+]
+user32.GetUserObjectInformationW.restype = wintypes.BOOL
+kernel32.GetCurrentThreadId.argtypes = []
+kernel32.GetCurrentThreadId.restype = wintypes.DWORD
+kernel32.CreateProcessW.argtypes = [
+    wintypes.LPCWSTR, wintypes.LPWSTR, ctypes.c_void_p, ctypes.c_void_p, wintypes.BOOL,
+    wintypes.DWORD, ctypes.c_void_p, wintypes.LPCWSTR,
+    ctypes.POINTER(STARTUPINFOW), ctypes.POINTER(PROCESS_INFORMATION),
+]
+kernel32.CreateProcessW.restype = wintypes.BOOL
+
+
+def current_desktop_name() -> str | None:
+    """Name of the calling thread's desktop (e.g. 'Default' or 'exebox-...'), or None."""
+    hdesk = user32.GetThreadDesktop(kernel32.GetCurrentThreadId())
+    if not hdesk:
+        return None
+    needed = wintypes.DWORD(0)
+    user32.GetUserObjectInformationW(hdesk, UOI_NAME, None, 0, ctypes.byref(needed))
+    buf = ctypes.create_unicode_buffer(max(needed.value // 2 + 1, 64))
+    if not user32.GetUserObjectInformationW(hdesk, UOI_NAME, buf, ctypes.sizeof(buf), ctypes.byref(needed)):
+        return None
+    return buf.value or None
+
+
+def launch_process(
+    exe: str,
+    args: Sequence[str] | None = None,
+    cwd: str | None = None,
+    desktop: str = INTERACTIVE_DESKTOP,
+) -> int:
+    """Spawn a detached process on ``desktop`` (default ``WinSta0\\Default``) and return its PID."""
+    argv = [str(exe), *(str(a) for a in (args or []))]
+    cmdline = subprocess.list2cmdline(argv)
+    base_flags = DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+    last_err = 0
+    for flags in (base_flags | CREATE_BREAKAWAY_FROM_JOB, base_flags):
+        si = STARTUPINFOW(cb=ctypes.sizeof(STARTUPINFOW), lpDesktop=desktop)
+        pi = PROCESS_INFORMATION()
+        cmd_buf = ctypes.create_unicode_buffer(cmdline)
+        ok = bool(
+            kernel32.CreateProcessW(
+                str(exe),
+                cmd_buf,
+                None,
+                None,
+                False,
+                flags,
+                None,
+                str(cwd) if cwd is not None else None,
+                ctypes.byref(si),
+                ctypes.byref(pi),
+            )
+        )
+        if ok:
+            try:
+                return int(pi.dwProcessId)
+            finally:
+                if pi.hThread:
+                    kernel32.CloseHandle(pi.hThread)
+                if pi.hProcess:
+                    kernel32.CloseHandle(pi.hProcess)
+        last_err = ctypes.get_last_error()
+    raise ctypes.WinError(last_err)
 
 
 def exe_of_pid(pid: int) -> str | None:

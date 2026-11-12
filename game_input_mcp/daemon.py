@@ -934,6 +934,80 @@ def _h_mouse_move_relative(p: dict) -> dict:
     return result
 
 
+def _h_launch_process(p: dict) -> dict:
+    """Spawn a local executable on WinSta0\\Default as an independent process and return its PID."""
+    raw_exe = p.get("exe")
+    if not isinstance(raw_exe, str) or not raw_exe.strip():
+        return error_response(
+            "INVALID_PARAMS",
+            "exe must be a non-empty path to a local executable",
+            retryable=False,
+        )
+    exe_path = Path(raw_exe)
+    if not exe_path.is_file():
+        return error_response(
+            "EXECUTABLE_NOT_FOUND",
+            f"Executable file does not exist: {exe_path}",
+            retryable=False,
+            exe=str(exe_path),
+        )
+    raw_args = p.get("args")
+    if raw_args is None:
+        args_list: list[str] = []
+    elif isinstance(raw_args, (list, tuple)):
+        args_list = [str(a) for a in raw_args]
+    else:
+        return error_response(
+            "INVALID_PARAMS",
+            "args must be a list of argument strings",
+            retryable=False,
+        )
+    raw_cwd = p.get("cwd")
+    if raw_cwd is None:
+        cwd_path = exe_path.resolve().parent
+    elif isinstance(raw_cwd, str) and raw_cwd.strip():
+        cwd_path = Path(raw_cwd)
+        if not cwd_path.is_dir():
+            return error_response(
+                "INVALID_PARAMS",
+                f"Working directory does not exist: {cwd_path}",
+                retryable=False,
+                cwd=str(cwd_path),
+            )
+        cwd_path = cwd_path.resolve()
+    else:
+        return error_response(
+            "INVALID_PARAMS",
+            "cwd must be an existing directory path",
+            retryable=False,
+        )
+    exe_resolved = str(exe_path.resolve())
+    cwd_resolved = str(cwd_path)
+    try:
+        pid = win32.launch_process(
+            exe_resolved,
+            args_list,
+            cwd=cwd_resolved,
+            desktop=win32.INTERACTIVE_DESKTOP,
+        )
+    except OSError as exc:
+        return error_response(
+            "LAUNCH_FAILED",
+            str(exc),
+            retryable=False,
+            exe=exe_resolved,
+            cwd=cwd_resolved,
+            winerror=getattr(exc, "winerror", None),
+        )
+    return ok_response(
+        pid=int(pid),
+        exe=exe_resolved,
+        args=args_list,
+        cwd=cwd_resolved,
+        desktop=win32.INTERACTIVE_DESKTOP,
+    )
+
+
 def _h_abort_timeline(p: dict) -> dict:
     session_id = p.get("session_id")
     try:
@@ -974,6 +1048,7 @@ HANDLERS = {
     "run_timeline": _h_run_timeline,
     "abort_timeline": _h_abort_timeline,
     "mouse_move_relative": _h_mouse_move_relative,
+    "launch_process": _h_launch_process,
 }
 
 

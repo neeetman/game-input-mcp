@@ -275,12 +275,30 @@ class TimelineRunner:
         """1 ms system timer resolution + time-critical thread priority for the
         duration of a run. No-op where the Win32 calls are unavailable."""
         import ctypes
+        from ctypes import wintypes
+
+        class _PowerThrottlingState(ctypes.Structure):
+            _fields_ = [("Version", wintypes.ULONG), ("ControlMask", wintypes.ULONG), ("StateMask", wintypes.ULONG)]
 
         winmm = kernel32 = None
         old_priority = None
         try:
             winmm = ctypes.WinDLL("winmm")
             kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+            kernel32.GetCurrentThread.restype = wintypes.HANDLE
+            kernel32.GetThreadPriority.argtypes = [wintypes.HANDLE]
+            kernel32.GetThreadPriority.restype = ctypes.c_int
+            kernel32.SetThreadPriority.argtypes = [wintypes.HANDLE, ctypes.c_int]
+            kernel32.SetThreadPriority.restype = wintypes.BOOL
+            kernel32.SetProcessInformation.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
+            kernel32.SetProcessInformation.restype = wintypes.BOOL
+            # Windows 11 ignores timeBeginPeriod(1) for windowless/hidden-desktop processes unless
+            # PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION (4) is cleared on ProcessPowerThrottling (4).
+            throttling = _PowerThrottlingState(1, 4, 0)
+            kernel32.SetProcessInformation(
+                kernel32.GetCurrentProcess(), 4, ctypes.byref(throttling), ctypes.sizeof(throttling)
+            )
             winmm.timeBeginPeriod(1)
             thread = kernel32.GetCurrentThread()
             old_priority = kernel32.GetThreadPriority(thread)

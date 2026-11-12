@@ -218,3 +218,33 @@ def test_session_heartbeat_thread_extends_lease_until_close() -> None:
     assert beats >= 2
     assert state.get("heartbeats", 0) == beats  # thread stopped with the session
     assert session.heartbeat_error is None
+
+
+def test_client_launch_process_invokes_daemon_and_raises_on_error(tmp_path) -> None:
+    exe = tmp_path / "Game.exe"
+    client, transport = _client(_ok({
+        "success": True,
+        "pid": 5566,
+        "exe": str(exe),
+        "args": ["-dx12"],
+        "cwd": str(tmp_path),
+        "desktop": r"WinSta0\Default",
+    }))
+
+    out = client.launch_process(exe, args=["-dx12"], cwd=tmp_path)
+    assert out["pid"] == 5566
+    assert transport.requests == [{
+        "id": 1,
+        "method": "launch_process",
+        "params": {"exe": str(exe), "args": ["-dx12"], "cwd": str(tmp_path)},
+    }]
+
+    err_client, _ = _client(_ok({
+        "success": False,
+        "error_code": "EXECUTABLE_NOT_FOUND",
+        "message": "missing",
+    }))
+    with pytest.raises(InputError) as info:
+        err_client.launch_process(exe)
+    assert info.value.code == "EXECUTABLE_NOT_FOUND"
+
