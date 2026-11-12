@@ -170,6 +170,8 @@ def test_real_window_kind_of_the_desktop_is_well_formed() -> None:
     from game_input_mcp import win32
 
     infos = win32.list_window_infos()
+    if not infos and (win32.current_desktop_name() or "Default").lower() != "default":
+        pytest.skip(f"non-interactive desktop {win32.current_desktop_name()!r} has no visible windows")
     assert infos
     kind = win32.window_frame_kind(infos[0].hwnd)
     assert set(kind) == {"has_frame", "maximized", "minimized", "fullscreen"}

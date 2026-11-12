@@ -5,6 +5,8 @@ from __future__ import annotations
 import os
 import sys
 
+import pytest
+
 from game_input_mcp import win32
 
 
@@ -30,6 +32,8 @@ def test_describe_window_for_no_window() -> None:
 
 def test_every_listed_window_carries_exe_and_monitor_fields() -> None:
     infos = win32.list_window_infos()
+    if not infos and (win32.current_desktop_name() or "Default").lower() != "default":
+        pytest.skip(f"non-interactive desktop {win32.current_desktop_name()!r} has no visible windows")
 
     assert infos, "expected at least one visible window on an interactive desktop"
     for info in infos:
@@ -44,3 +48,43 @@ def test_process_cpu_ms_reports_this_process_and_none_for_a_missing_one() -> Non
 
     assert first is not None and second is not None and second >= first > 0
     assert win32.process_cpu_ms(0x7FFFFFF0) is None
+
+
+def test_current_desktop_name_returns_non_empty_string() -> None:
+    desk = win32.current_desktop_name()
+
+    assert isinstance(desk, str) and len(desk) > 0
+
+
+def test_launch_process_sets_interactive_desktop_and_closes_handles(monkeypatch) -> None:
+    captured: dict = {}
+    closed: list[int] = []
+
+    def fake_create_process(exe, cmd_buf, pa, ta, inherit, flags, env, cwd, p_si, p_pi):
+        si = getattr(p_si, "contents", None) or p_si._obj
+        pi = getattr(p_pi, "contents", None) or p_pi._obj
+        captured["exe"] = exe
+        captured["cmd"] = cmd_buf.value
+        captured["inherit"] = bool(inherit)
+        captured["flags"] = int(flags)
+        captured["cwd"] = cwd
+        captured["desktop"] = si.lpDesktop
+        pi.hProcess = 101
+        pi.hThread = 102
+        pi.dwProcessId = 4242
+        pi.dwThreadId = 4243
+        return 1
+
+    monkeypatch.setattr(win32.kernel32, "CreateProcessW", fake_create_process)
+    monkeypatch.setattr(win32.kernel32, "CloseHandle", lambda h: closed.append(int(h)) or 1)
+
+    pid = win32.launch_process(r"C:\Games\Game.exe", ["-dx12", "-windowed"], cwd=r"C:\Games")
+
+    assert pid == 4242
+    assert captured["exe"] == r"C:\Games\Game.exe"
+    assert "-dx12" in captured["cmd"] and "-windowed" in captured["cmd"]
+    assert captured["inherit"] is False
+    assert captured["cwd"] == r"C:\Games"
+    assert captured["desktop"] == r"WinSta0\Default"
+    assert sorted(closed) == [101, 102]
+

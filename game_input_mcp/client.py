@@ -19,6 +19,7 @@ from __future__ import annotations
 import ctypes
 import itertools
 import json
+import os
 import struct
 import threading
 import time
@@ -278,6 +279,20 @@ class Client:
         if isinstance(result, dict) and result.get("success") is False:
             raise InputError(result)
         return result if isinstance(result, dict) else {"success": True, "result": result}
+
+    def launch_process(
+        self,
+        exe: str | os.PathLike[str],
+        args: Sequence[str] | None = None,
+        cwd: str | os.PathLike[str] | None = None,
+    ) -> dict[str, Any]:
+        """Launch a local executable on WinSta0\\Default via the daemon and return its pid."""
+        return self.invoke(
+            "launch_process",
+            exe=os.fspath(exe),
+            args=[str(a) for a in args] if args is not None else None,
+            cwd=os.fspath(cwd) if cwd is not None else None,
+        )
 
     def open_session(
         self,

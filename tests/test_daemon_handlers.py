@@ -481,3 +481,52 @@ def test_get_window_info_and_focus_window_compatibility(monkeypatch) -> None:
 
     monkeypatch.setattr(daemon.win32, "get_window_info", lambda pid: None)
     assert daemon._h_get_window_info({"pid": 999})["found"] is False
+
+
+def test_launch_process_handler_validates_and_launches_on_default_desktop(monkeypatch, tmp_path) -> None:
+    assert daemon.HANDLERS["launch_process"] is daemon._h_launch_process
+    exe = tmp_path / "Game.exe"
+    exe.write_bytes(b"MZ")
+    calls: list[tuple[str, list[str], str, str]] = []
+
+    def fake_launch(exe_path: str, args=None, cwd=None, desktop=r"WinSta0\Default") -> int:
+        calls.append((exe_path, list(args or []), str(cwd), str(desktop)))
+        return 7788
+
+    monkeypatch.setattr(daemon.win32, "launch_process", fake_launch)
+
+    res = daemon._h_launch_process({"exe": str(exe), "args": ["-dx12", 1]})
+    assert res == {
+        "success": True,
+        "pid": 7788,
+        "exe": str(exe.resolve()),
+        "args": ["-dx12", "1"],
+        "cwd": str(tmp_path.resolve()),
+        "desktop": r"WinSta0\Default",
+    }
+    assert calls == [(str(exe.resolve()), ["-dx12", "1"], str(tmp_path.resolve()), r"WinSta0\Default")]
+
+    missing = daemon._h_launch_process({"exe": str(tmp_path / "missing.exe")})
+    assert missing["success"] is False
+    assert missing["error_code"] == "EXECUTABLE_NOT_FOUND"
+
+    bad_exe = daemon._h_launch_process({"exe": ""})
+    assert bad_exe["success"] is False
+    assert bad_exe["error_code"] == "INVALID_PARAMS"
+
+    bad_args = daemon._h_launch_process({"exe": str(exe), "args": "-dx12"})
+    assert bad_args["success"] is False
+    assert bad_args["error_code"] == "INVALID_PARAMS"
+
+    bad_cwd = daemon._h_launch_process({"exe": str(exe), "cwd": str(tmp_path / "no-such-dir")})
+    assert bad_cwd["success"] is False
+    assert bad_cwd["error_code"] == "INVALID_PARAMS"
+
+    def raise_os_error(*_a, **_k):
+        raise OSError(5, "Access is denied")
+
+    monkeypatch.setattr(daemon.win32, "launch_process", raise_os_error)
+    failed = daemon._h_launch_process({"exe": str(exe)})
+    assert failed["success"] is False
+    assert failed["error_code"] == "LAUNCH_FAILED"
+
